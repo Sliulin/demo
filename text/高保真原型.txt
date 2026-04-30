@@ -1,0 +1,322 @@
+开发高保真原型是验证产品逻辑、降低开发沟通成本的关键一步。针对这款局域网联机桌游 App，我们将从用户体验、界面规划到前端代码实现进行全方位梳理。
+
+一、 用户体验分析 (UX)
+这款应用的核心定位是一跨主打“弱系统逻辑、强线下社交”的局域网联机回合制桌游 App 。这意味着界面的主要作用是辅助而非干扰。
+
+
+减法设计： 具体的战斗与数值判定交由玩家线下完成，App 负责严格管控信息差、游戏节奏与阶段流转 。UI 需要保持克制，避免过多的弹窗打断玩家的线下交流。
+
+
+聚焦核心痛点： 游戏严格划分为“一阶段（私密行动）”与“二阶段（公开结算）”交替进行 。一阶段的核心体验是防窥与防误触；二阶段的核心体验是信息公示与流程推进。
+
+二、 产品界面规划 (UI)
+基于需求文档，我们将重点规划以下三个最具代表性的核心界面，并在随后提供 HTML 实现代码：
+
+
+启动与网络匹配页 (Home)： 采用极简风格。重点展示通过 NSD 自动扫描同一 Wi-Fi 下的房间，列表展示房间名和房主 ID，以及创建房间按钮 。
+
+
+第一阶段 - 个人行动主页 (Phase 1)： 暗色调沉浸式设计。顶部悬挂全局倒计时条，中心区域为占据屏幕主要位置的按钮（如攻打、防御、偷袭），四周环绕全场玩家头像（实时更新“空闲”、“等待中”或“已结盟”状态） 。
+
+
+第二阶段 - 公开议事厅 (Phase 2)： 明亮或具有视觉冲击力的设计。包含系统战报播报区、当前事件卡片（聚焦显示正在进行线下判定的事件），以及底部的全员公投滑块（显示“等待全员确认”） 。
+
+三、 高保真 HTML 原型实现
+以下使用 HTML5 + Tailwind CSS + FontAwesome 构建高保真原型。为了真实模拟 iPhone 15 Pro 的物理观感，界面尺寸设定为 393x852，并带有机身圆角、边框和灵动岛（Dynamic Island）。
+
+你可以将以下代码分别保存为对应的 .html 文件放在同一个文件夹中，然后用浏览器打开 index.html 即可看到并排展示的真机高保真效果。
+
+1. 主控制台 (index.html)
+这个文件用于将所有子页面平铺在一个画板上。
+
+HTML
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>局域网桌游App - 高保真原型</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #1e1e24; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .device-container { display: flex; gap: 40px; padding: 40px; overflow-x: auto; min-height: 100vh; align-items: center; }
+        .iphone-frame { width: 393px; height: 852px; border-radius: 55px; border: 12px solid #000; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); position: relative; overflow: hidden; background: #000; flex-shrink: 0; }
+        .dynamic-island { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 120px; height: 35px; background-color: #000; border-radius: 20px; z-index: 100; }
+        iframe { width: 100%; height: 100%; border: none; border-radius: 43px; }
+        .label { text-align: center; margin-top: 15px; font-size: 1.1rem; color: #a0aec0; font-weight: 600; letter-spacing: 1px; }
+    </style>
+</head>
+<body>
+    <div class="p-8">
+        <h1 class="text-3xl font-bold mb-2">局域网桌游 App 交互原型</h1>
+        <p class="text-gray-400">基于 Tailwind CSS 构建。请确保所有 HTML 文件在同一目录下运行。</p>
+    </div>
+    <div class="device-container">
+        <div>
+            <div class="iphone-frame">
+                <div class="dynamic-island"></div>
+                <iframe src="home.html"></iframe>
+            </div>
+            <div class="label">启动与网络匹配 (Home)</div>
+        </div>
+
+        <div>
+            <div class="iphone-frame">
+                <div class="dynamic-island"></div>
+                <iframe src="phase1.html"></iframe>
+            </div>
+            <div class="label">一阶段：私密行动 (Phase 1)</div>
+        </div>
+
+        <div>
+            <div class="iphone-frame">
+                <div class="dynamic-island"></div>
+                <iframe src="phase2.html"></iframe>
+            </div>
+            <div class="label">二阶段：公开大厅 (Phase 2)</div>
+        </div>
+    </div>
+</body>
+</html>
+2. 启动与网络匹配页 (home.html)
+该页面实现局域网房间列表扫描与房间创建功能 。
+
+HTML
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-50 h-screen w-full relative pt-12 select-none">
+    <div class="w-full h-12 absolute top-0 flex justify-between items-center px-6 text-sm font-semibold pt-2">
+        <span>09:41</span>
+        <div class="flex space-x-2">
+            <i class="fa-solid fa-signal"></i>
+            <i class="fa-solid fa-wifi"></i>
+            <i class="fa-solid fa-battery-full"></i>
+        </div>
+    </div>
+
+    <div class="px-6 pt-8 pb-4">
+        <h1 class="text-3xl font-bold text-gray-900 tracking-tight">寻找战局</h1>
+        <p class="text-sm text-gray-500 mt-1 flex items-center">
+            <span class="w-2 h-2 rounded-full bg-green-500 inline-block mr-2 animate-pulse"></span>
+            Wi-Fi 已连接，正在扫描局域网房间...
+        </p>
+    </div>
+
+    <div class="px-6 mt-4 space-y-4 overflow-y-auto" style="height: 60%;">
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between active:scale-95 transition-transform">
+            <div class="flex items-center space-x-4">
+                <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" alt="Avatar" class="w-12 h-12 rounded-full border-2 border-indigo-100">
+                <div>
+                    <h3 class="font-bold text-gray-800 text-lg">Alex 的客厅局</h3>
+                    <p class="text-xs text-gray-400 mt-1">房主 ID: Alex_1024 • 4/6 人</p>
+                </div>
+            </div>
+            <div class="bg-indigo-50 w-10 h-10 rounded-full flex justify-center items-center text-indigo-600">
+                <i class="fa-solid fa-chevron-right"></i>
+            </div>
+        </div>
+
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between active:scale-95 transition-transform">
+            <div class="flex items-center space-x-4">
+                <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" alt="Avatar" class="w-12 h-12 rounded-full border-2 border-pink-100">
+                <div>
+                    <h3 class="font-bold text-gray-800 text-lg">周末桌游小队</h3>
+                    <p class="text-xs text-gray-400 mt-1">房主 ID: Sarah_W • 2/8 人</p>
+                </div>
+            </div>
+            <div class="bg-indigo-50 w-10 h-10 rounded-full flex justify-center items-center text-indigo-600">
+                <i class="fa-solid fa-chevron-right"></i>
+            </div>
+        </div>
+    </div>
+
+    <div class="absolute bottom-10 w-full px-6">
+        <button class="w-full bg-gray-900 text-white font-bold text-lg py-4 rounded-2xl shadow-xl flex items-center justify-center space-x-2 active:bg-gray-800">
+            <i class="fa-solid fa-plus"></i>
+            <span>创建新房间</span>
+        </button>
+    </div>
+</body>
+</html>
+3. 第一阶段：个人行动主页 (phase1.html)
+这个页面采用深色模式，营造私密感。包含全局倒计时、全场玩家状态环及行动指令提交 。
+
+HTML
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-900 h-screen w-full relative pt-12 select-none overflow-hidden text-white">
+    <div class="w-full h-12 absolute top-0 flex justify-between items-center px-6 text-sm font-semibold pt-2 text-white">
+        <span>09:42</span>
+        <div class="flex space-x-2">
+            <i class="fa-solid fa-signal"></i>
+            <i class="fa-solid fa-wifi"></i>
+            <i class="fa-solid fa-battery-full"></i>
+        </div>
+    </div>
+
+    <div class="px-6 pt-6 flex flex-col items-center">
+        <span class="text-xs text-slate-400 tracking-widest uppercase font-bold">Phase 1 / 私密行动期</span>
+        <div class="text-5xl font-black text-red-500 mt-2 tracking-tighter">00:45</div>
+        <div class="w-full bg-slate-800 h-2 rounded-full mt-4 overflow-hidden">
+            <div class="bg-red-500 h-full w-2/3"></div>
+        </div>
+    </div>
+
+    <div class="mt-8 px-4 flex justify-between items-center h-40">
+        <div class="flex flex-col items-center opacity-100 scale-110">
+            <div class="relative">
+                <img src="https://images.unsplash.com/photo-1599566150163-29194dcaad36?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" class="w-16 h-16 rounded-full border-2 border-green-400 shadow-[0_0_15px_rgba(74,222,128,0.5)]">
+                <div class="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-green-500 text-xs px-2 py-0.5 rounded text-white font-bold border border-slate-900">目标</div>
+            </div>
+            <span class="text-xs mt-3 text-slate-300">David</span>
+        </div>
+        
+        <div class="flex flex-col items-center opacity-50 grayscale">
+            <div class="relative">
+                <img src="https://images.unsplash.com/photo-1438761681033-6461ffad8d80?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" class="w-14 h-14 rounded-full border-2 border-slate-600">
+                <div class="absolute -top-1 -right-1 bg-slate-800 rounded-full w-6 h-6 flex justify-center items-center"><i class="fa-solid fa-lock text-slate-400 text-[10px]"></i></div>
+            </div>
+            <span class="text-xs mt-3 text-slate-500">Emma</span>
+        </div>
+
+        <div class="flex flex-col items-center">
+            <div class="relative">
+                <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" class="w-14 h-14 rounded-full border-2 border-indigo-500">
+                <div class="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-indigo-600 text-xs px-2 py-0.5 rounded text-white font-bold border border-slate-900">YOU</div>
+            </div>
+            <span class="text-xs mt-3 text-slate-300">Alex</span>
+        </div>
+    </div>
+
+    <div class="bg-slate-800 absolute bottom-0 w-full h-[45%] rounded-t-[2.5rem] p-6 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
+        <h3 class="text-center text-sm text-slate-400 font-semibold mb-6">对 <span class="text-green-400">David</span> 执行操作</h3>
+        
+        <div class="grid grid-cols-2 gap-4">
+            <button class="bg-red-500/10 border border-red-500/50 hover:bg-red-500/20 py-4 rounded-2xl flex flex-col items-center justify-center space-y-2 transition">
+                <i class="fa-solid fa-khanda text-2xl text-red-500"></i>
+                <span class="text-red-500 font-bold">正面攻打</span>
+            </button>
+            <button class="bg-yellow-500/10 border border-yellow-500/50 hover:bg-yellow-500/20 py-4 rounded-2xl flex flex-col items-center justify-center space-y-2 transition">
+                <i class="fa-solid fa-mask text-2xl text-yellow-500"></i>
+                <span class="text-yellow-500 font-bold">暗中偷袭</span>
+            </button>
+            <button class="col-span-2 bg-indigo-500/10 border border-indigo-500/50 hover:bg-indigo-500/20 py-4 rounded-2xl flex flex-col items-center justify-center space-y-2 transition mt-2">
+                <i class="fa-solid fa-handshake text-2xl text-indigo-400"></i>
+                <span class="text-indigo-400 font-bold">发起结盟请求</span>
+            </button>
+        </div>
+
+        <p class="text-center text-[10px] text-slate-500 mt-6"><i class="fa-solid fa-shield-halved mr-1"></i> 长按按钮提交指令，防止误触</p>
+    </div>
+</body>
+</html>
+4. 第二阶段：公开议事厅 (phase2.html)
+明亮的设计，侧重于系统战报高亮展示、当前线下判定事件卡片以及底部的全员公投滑块 。
+
+HTML
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-100 h-screen w-full relative pt-12 select-none">
+    <div class="w-full h-12 absolute top-0 flex justify-between items-center px-6 text-sm font-semibold pt-2 text-gray-800">
+        <span>09:45</span>
+        <div class="flex space-x-2">
+            <i class="fa-solid fa-signal"></i>
+            <i class="fa-solid fa-wifi"></i>
+            <i class="fa-solid fa-battery-full"></i>
+        </div>
+    </div>
+
+    <div class="bg-yellow-400/90 w-full px-4 py-3 shadow-md mt-2 overflow-hidden flex items-center">
+        <i class="fa-solid fa-bullhorn text-yellow-900 mr-3 animate-pulse"></i>
+        <p class="text-sm font-bold text-yellow-900 whitespace-nowrap overflow-hidden text-ellipsis">
+            【系统播报】Sarah 与 Emma 结盟，斩获双倍资源特效！
+        </p>
+    </div>
+
+    <div class="px-6 py-4 flex justify-between items-end">
+        <h2 class="text-2xl font-black text-gray-900">公开结算庭</h2>
+        <span class="text-xs font-bold bg-gray-200 text-gray-600 px-3 py-1 rounded-full">Day 2</span>
+    </div>
+
+    <div class="mx-6 mt-2 bg-white rounded-[2rem] shadow-xl p-6 border-2 border-indigo-100 relative">
+        <div class="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-indigo-600 text-white px-4 py-1 rounded-full text-xs font-bold shadow-lg">当前裁定事件 (1/4)</div>
+        
+        <div class="flex items-center justify-between mt-4">
+            <div class="flex flex-col items-center">
+                <img src="https://images.unsplash.com/photo-1599566150163-29194dcaad36?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" class="w-16 h-16 rounded-full border-4 border-yellow-400">
+                <span class="font-bold text-gray-800 mt-2 text-sm">David</span>
+                <span class="text-[10px] text-gray-500">HP: 8/10</span>
+            </div>
+            
+            <div class="flex flex-col items-center flex-1 px-2">
+                <div class="w-full flex justify-center text-red-500 mb-1">
+                    <i class="fa-solid fa-angles-right text-xl animate-pulse"></i>
+                </div>
+                <span class="bg-red-50 text-red-600 font-bold text-xs px-3 py-1 rounded-full border border-red-100">暗中偷袭</span>
+            </div>
+
+            <div class="flex flex-col items-center">
+                <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" class="w-16 h-16 rounded-full border-4 border-indigo-200">
+                <span class="font-bold text-gray-800 mt-2 text-sm">Alex</span>
+                <span class="text-[10px] text-gray-500">HP: 10/10</span>
+            </div>
+        </div>
+        
+        <div class="mt-6 bg-gray-50 p-4 rounded-xl border border-gray-100 text-center">
+            <p class="text-sm font-bold text-gray-600"><i class="fa-solid fa-dice mr-2"></i>等待线下掷骰判定...</p>
+            <p class="text-[10px] text-gray-400 mt-1">由房主录入最终结果</p>
+        </div>
+    </div>
+
+    <div class="px-6 mt-6">
+        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">大厅交流记录</h3>
+        <div class="space-y-3">
+            <div class="flex space-x-3">
+                <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" class="w-8 h-8 rounded-full">
+                <div class="bg-white p-3 rounded-2xl rounded-tl-none shadow-sm text-sm text-gray-700">
+                    David你竟然偷袭我？上一轮不是说好结盟吗！
+                </div>
+            </div>
+            <div class="flex space-x-3">
+                <img src="https://images.unsplash.com/photo-1599566150163-29194dcaad36?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80" class="w-8 h-8 rounded-full">
+                <div class="bg-indigo-50 p-3 rounded-2xl rounded-tl-none shadow-sm text-sm text-indigo-900 font-medium">
+                    单回合契约懂不懂呀，兵不厌诈🎲
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="absolute bottom-0 w-full bg-white px-6 py-6 shadow-[0_-5px_30px_rgba(0,0,0,0.05)] rounded-t-[2rem]">
+        <div class="flex justify-between items-center mb-3">
+            <span class="text-sm font-bold text-gray-800">全员公投确认中</span>
+            <span class="text-sm font-black text-indigo-600">3 / 5</span>
+        </div>
+        <div class="w-full bg-gray-100 h-3 rounded-full overflow-hidden">
+            <div class="bg-indigo-500 h-full w-[60%] rounded-full"></div>
+        </div>
+        <button class="w-full mt-5 bg-red-50 text-red-600 font-bold py-3 rounded-xl flex justify-center items-center space-x-2 border border-red-100 active:bg-red-100 transition">
+            <i class="fa-solid fa-hand"></i>
+            <span>长按驳回重裁</span>
+        </button>
+    </div>
+</body>
+</html>
+这种通过 iframe 容器统一展示的方法，不仅能直观看到应用不同维度的流转逻辑，也方便前端工程师在后续开发中将 HTML 组件直接拆解为 React/Vue 文件。祝产品落地顺利！
