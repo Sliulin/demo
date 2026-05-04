@@ -43,6 +43,7 @@
 ## 代码约定
 
 - 使用 idiomatic Kotlin，遵循 `kotlin.code.style=official`。
+- 保持项目架构整洁，避免把无关职责堆在同一个文件中；如有必要，可以新建文件承载新的页面、组件、模型、规则或 helper。
 - UI 使用 Jetpack Compose 和 Material 3，新增页面优先放在 `ui/<feature>/` 下。
 - 状态管理走 ViewModel + `StateFlow`/`MutableStateFlow`。不要引入 `LiveData`。
 - Compose 组件尽量保持无业务逻辑：状态向下传递，事件通过 lambda 向上传递。
@@ -91,3 +92,13 @@ Remove-Item "C:\path\to\file.txt"
 - 不要修改 `local.properties` 中的本机 SDK 路径，除非用户明确要求。
 - 不要无关升级 AGP、Kotlin、Compose BOM 或 AndroidX 版本；依赖升级需要说明原因并验证构建。
 - 保持改动聚焦：修 UI 时不要顺手重写规则，修规则时不要顺手重做页面样式。
+
+## 编译执行约定
+
+- 永远不要主动运行编译、测试或构建命令，包括但不限于 `.\gradlew.bat :app:assembleDebug`、`.\gradlew.bat :app:testDebugUnitTest`、`.\gradlew.bat :app:connectedDebugAndroidTest`。
+- 即使修改了规则、模型、ViewModel、Compose/UI、Manifest、依赖、资源、联网、NSD、Socket 或权限相关逻辑，也不要自动编译或测试；只做代码级检查、静态检查或改动范围说明。
+- 最终回复中如果涉及验证，应明确说明未运行编译/测试，由用户自行编译验证。
+
+## 环境命令限制
+
+- 不要使用 `rg` / `ripgrep`。当前环境中的 `rg.exe` 来自 Codex 应用安装目录，执行时会被系统拒绝访问；搜索文件或文本时改用 PowerShell 原生命令，例如 `Get-ChildItem`、`Select-String`。

@@ -193,6 +193,8 @@ private fun EventItemCard(
     // 实时抓取最新的玩家数值
     val liveAttacker = players.find { it.id == event.attacker.id } ?: event.attacker
     val liveDefender = players.find { it.id == event.defender.id } ?: event.defender
+    val attackerName = liveAttacker.heavenMarkedName()
+    val defenderName = liveDefender.heavenMarkedName()
 
     // 独立维护每张卡片的投票状态
     var hasVoted by remember(event.id, event.hostDecisionIndex) { mutableStateOf(false) }
@@ -202,6 +204,7 @@ private fun EventItemCard(
             hasVoted = false
         }
     }
+    val isEventFinished = event.confirmCount >= event.totalPlayers
 
     // 透明度：当前的最高亮，过去的半透明，未来的最暗
     val cardAlpha = if (isCurrent) 1f else if (isPast) 0.6f else 0.4f
@@ -251,17 +254,21 @@ private fun EventItemCard(
 
             // --- 攻守双方信息 ---
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("攻方 · ${liveAttacker.name}", fontWeight = FontWeight.Bold, color = Color(0xFFB54708))
+                Text("攻方 · $attackerName", fontWeight = FontWeight.Bold, color = Color(0xFFB54708))
                 Text("底蕴: ${liveAttacker.spiritVeins}", color = Color(0xFFB54708), fontSize = 14.sp)
             }
             Spacer(modifier = Modifier.height(10.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("守方 · ${liveDefender.name}", fontWeight = FontWeight.Bold, color = Color(0xFF175CD3))
+                Text("守方 · $defenderName", fontWeight = FontWeight.Bold, color = Color(0xFF175CD3))
                 Text("底蕴: ${liveDefender.spiritVeins}", color = Color(0xFF175CD3), fontSize = 14.sp)
             }
             Spacer(modifier = Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("法门 · $actionName", color = Color(0xFF8C6A2F), modifier = Modifier.weight(1f))
+                if (event.actionType == ActionType.DUEL) {
+                    Text("赌注: ${event.stake}", color = Color(0xFF7A5C2E), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                }
                 if (event.karmicInfluence != 0) {
                     val color = if (event.karmicInfluence > 0) Color(0xFF34C759) else Color(0xFFFF3B30)
                     val sign = if (event.karmicInfluence > 0) "+" else ""
@@ -270,7 +277,7 @@ private fun EventItemCard(
             }
 
             // ================= 当前事件的判定互动区 =================
-            if (isCurrent) {
+            if (isCurrent && !isEventFinished) {
                 Spacer(modifier = Modifier.height(20.dp))
                 Divider(color = Color(0xFFE6D3A3).copy(alpha = 0.5f), thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -407,7 +414,7 @@ private fun EventItemCard(
             }
 
             // ================= 过去事件的裁定结果展示 =================
-            if (isPast && event.hostDecisionIndex != null) {
+            if ((isPast || (isCurrent && isEventFinished)) && event.hostDecisionIndex != null) {
                 val decisionText = when (event.actionType) {
                     ActionType.DUEL -> listOf("判定成功", "判定失败", "对方投降").getOrNull(event.hostDecisionIndex ?: 0)
                     ActionType.RAID -> listOf("奇袭成功", "奇袭失败", "被防御").getOrNull(event.hostDecisionIndex ?: 0)
@@ -501,4 +508,8 @@ private fun SecondaryButton(
         color = Color(0xFF6B7280),
         onClick = onClick
     )
+}
+
+private fun Player.heavenMarkedName(): String {
+    return if (hasHeavenProtection) "$name ★" else name
 }

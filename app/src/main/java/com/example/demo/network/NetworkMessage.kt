@@ -1,6 +1,7 @@
 package com.example.demo.network
 
 import com.example.demo.model.ActionType
+import com.example.demo.model.AllianceRequest
 import com.example.demo.model.GameEvent
 import com.example.demo.model.GamePhase
 import com.example.demo.model.Player
@@ -83,7 +84,39 @@ data class MsgChat(
     val senderId: String,
     val senderName: String,
     val content: String,
-    val isAllianceChat: Boolean
+    val isAllianceChat: Boolean,
+    val recipientPlayerId: String? = null
+) : NetworkMessage()
+
+@Serializable
+data class MsgAllianceRequest(
+    val requestId: String,
+    val fromPlayerId: String,
+    val fromPlayerName: String,
+    val toPlayerId: String
+) : NetworkMessage()
+
+@Serializable
+data class MsgAllianceResponse(
+    val requestId: String,
+    val fromPlayerId: String,
+    val toPlayerId: String,
+    val accepted: Boolean
+) : NetworkMessage()
+
+@Serializable
+data class MsgAllianceResult(
+    val players: List<Player>,
+    val pendingRequest: AllianceRequest? = null,
+    val recipientPlayerId: String? = null,
+    val alliancePartnerId: String? = null,
+    val notice: String = ""
+) : NetworkMessage()
+
+@Serializable
+data class MsgActionRejected(
+    val playerId: String,
+    val notice: String
 ) : NetworkMessage()
 
 // 消息：重启第一阶段（全员重新提交法旨）

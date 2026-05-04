@@ -20,12 +20,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -59,6 +63,19 @@ class MainActivity : ComponentActivity() {
 fun AppNavigation(viewModel: GameViewModel = viewModel()) {
     val navController = rememberNavController()
     val uiState by viewModel.uiState.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                viewModel.onAppForegrounded()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     LaunchedEffect(uiState.currentScreen) {
         val route = when(uiState.currentScreen) {
@@ -105,10 +122,22 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
             Phase1Screen(
                 players = uiState.players,
                 hasSubmittedAction = uiState.hasSubmittedAction,
+                incomingAllianceRequest = uiState.incomingAllianceRequest,
+                allianceNotice = uiState.allianceNotice,
+                chatMessages = uiState.chatMessages,
                 isHost = uiState.isHost,
                 submittedCount = uiState.submittedActions.size,
                 onActionSubmit = { target, actionType, stake ->
                     viewModel.submitAction(target, actionType, stake)
+                },
+                onAllianceRequest = { target ->
+                    viewModel.requestAlliance(target)
+                },
+                onAllianceResponse = { request, accepted ->
+                    viewModel.respondAlliance(request, accepted)
+                },
+                onAllianceChatSend = { content ->
+                    viewModel.sendAllianceChat(content)
                 },
                 onForceProceed = { viewModel.restartPhase1() } // 根据您采用的方案调用
             )

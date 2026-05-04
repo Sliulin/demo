@@ -5,10 +5,12 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.demo.engine.AllianceRuleEngine
 import com.example.demo.engine.GameRuleEngine
 import com.example.demo.model.*
 import com.example.demo.network.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +42,10 @@ data class GameUiState(
     val submittedActions: Map<String, MsgSubmitAction> = emptyMap(),
     val isGameOver: Boolean = false,
     val canProceedToNextDay: Boolean = false,
-    val hasSubmittedAction: Boolean = false
+    val hasSubmittedAction: Boolean = false,
+    val pendingAllianceRequests: List<AllianceRequest> = emptyList(),
+    val incomingAllianceRequest: AllianceRequest? = null,
+    val allianceNotice: String = ""
 )
 
 enum class Screen { HOME, PHASE1, PHASE2, WAITING_ROOM }
@@ -59,10 +64,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     private val nsdHelper = GameNsdHelper(application)
     private var gameServer: GameServer? = null
-    private val gameClient = GameClient { msg -> handleNetworkMessage(msg) }
+    private val gameClient = GameClient(
+        onMessageReceived = { msg -> handleNetworkMessage(msg) },
+        onDisconnected = { scheduleClientReconnect() }
+    )
 
     private var myPlayerId: String = ""
-    private var settlementJob: kotlinx.coroutines.Job? = null
+    private var joinedRoomIp: String? = null
+    private var joinedRoomPort: Int = 9999
+    private var settlementJob: Job? = null
+    private var reconnectJob: Job? = null
 
     init {
         // 加载持久化的昵称
@@ -108,15 +119,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     // ================= 核心联机逻辑 (房主 & 客机) =================
 
+    fun onAppForegrounded() {
+        val state = _uiState.value
+        if (state.isHost && state.currentScreen != Screen.HOME) {
+            ensureHostServerRunning()
+            return
+        }
+
+        if (!state.isHost && state.currentScreen != Screen.HOME) {
+            scheduleClientReconnect(immediate = true)
+        }
+    }
+
     fun createRoom(roomName: String) {
         myPlayerId = "host_${System.currentTimeMillis()}"
         val globalName = _uiState.value.myPlayerName
         val host = Player(id = myPlayerId, name = globalName, isHost = true, isSelf = true)
 
+        joinedRoomIp = null
+        reconnectJob?.cancel()
         _uiState.update { it.copy(isHost = true, players = listOf(host)) }
 
         gameServer = GameServer(onMessageReceived = { msg -> handleNetworkMessage(msg) })
-        viewModelScope.launch { gameServer?.start() }
+        ensureHostServerRunning()
 
         nsdHelper.stopEverything()
         nsdHelper.startBroadcasting(roomName, globalName, 9999)
@@ -125,16 +150,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     fun joinRoom(room: GameRoom) {
         myPlayerId = "player_${System.currentTimeMillis()}"
-        val globalName = _uiState.value.myPlayerName
-
+        joinedRoomIp = room.ip
+        joinedRoomPort = room.port
         _uiState.update { it.copy(isHost = false) }
         nsdHelper.stopEverything()
 
         viewModelScope.launch {
             if (room.ip.isNotEmpty()) {
-                val connected = gameClient.connect(room.ip, room.port)
+                val connected = connectToHostAndJoin()
                 if (connected) {
-                    gameClient.sendMessage(MsgJoinRoom(myPlayerId, globalName))
                     _uiState.update { it.copy(currentScreen = Screen.WAITING_ROOM) }
                 } else {
                     _uiState.update { it.copy(systemBroadcast = "错误：无法连接到房主") }
@@ -159,6 +183,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun leaveRoom() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        joinedRoomIp = null
         gameClient.disconnect()
         gameServer?.stop()
         gameServer = null
@@ -169,6 +196,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     // ================= 第一阶段：暗流涌动 (指令提交) =================
 
     fun submitAction(targetPlayer: Player, actionType: ActionType, stake: Int = 0) {
+        if (AllianceRuleEngine.areAllied(_uiState.value.players, myPlayerId, targetPlayer.id) &&
+            (actionType == ActionType.DUEL || actionType == ActionType.RAID)
+        ) {
+            _uiState.update { it.copy(allianceNotice = "盟友之间不能互相攻打") }
+            return
+        }
+
         val msg = MsgSubmitAction(
             attackerId = myPlayerId,
             targetId = targetPlayer.id,
@@ -184,6 +218,65 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             handleNetworkMessage(msg)
         } else {
             sendToServer(msg) // 使用无阻塞发包
+        }
+    }
+
+    fun requestAlliance(targetPlayer: Player) {
+        val self = _uiState.value.players.find { it.id == myPlayerId } ?: return
+        val msg = MsgAllianceRequest(
+            requestId = "alliance_${System.currentTimeMillis()}_$myPlayerId",
+            fromPlayerId = myPlayerId,
+            fromPlayerName = self.name,
+            toPlayerId = targetPlayer.id
+        )
+
+        _uiState.update { it.copy(allianceNotice = "结盟请求已送出，等待回应") }
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    fun respondAlliance(request: AllianceRequest, accepted: Boolean) {
+        val msg = MsgAllianceResponse(
+            requestId = request.requestId,
+            fromPlayerId = request.fromPlayerId,
+            toPlayerId = request.toPlayerId,
+            accepted = accepted
+        )
+
+        _uiState.update { it.copy(incomingAllianceRequest = null) }
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    fun sendAllianceChat(content: String) {
+        val trimmedContent = content.trim()
+        if (trimmedContent.isEmpty()) return
+
+        val self = _uiState.value.players.find { it.id == myPlayerId } ?: return
+        val partnerId = self.alliancePartnerId
+        if (partnerId == null) {
+            _uiState.update { it.copy(allianceNotice = "结盟后才能发送盟友私聊") }
+            return
+        }
+
+        val msg = MsgChat(
+            senderId = myPlayerId,
+            senderName = self.name,
+            content = trimmedContent,
+            isAllianceChat = true,
+            recipientPlayerId = partnerId
+        )
+
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
         }
     }
 
@@ -232,15 +325,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         if (!_uiState.value.isHost) return
         val msg = "【天机重塑】房主开启了时光回溯，请重新下达法旨！"
         val currentState = _uiState.value
+        val cleanPlayers = AllianceRuleEngine.clearAlliances(currentState.players)
         _uiState.update { it.copy(
+            players = cleanPlayers,
             submittedActions = emptyMap(),
             hasSubmittedAction = false,
+            pendingAllianceRequests = emptyList(),
+            incomingAllianceRequest = null,
+            allianceNotice = "",
+            chatMessages = it.chatMessages.filterNot { message -> message.isAllianceChat },
             systemBroadcast = msg
         ) }
 
         // ✨ 弃用新增协议，直接复用已有的“游戏开始”协议，100%保证客机能收到！
         broadcastToAll(
-            MsgRoomStateSync(currentState.players, msg, emptyList()),
+            MsgRoomStateSync(cleanPlayers, msg, emptyList()),
             MsgGameStart(GamePhase.PHASE_1, msg)
         )
     }
@@ -302,12 +401,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
             is MsgGameStart -> {
                 _uiState.update { state ->
+                    val cleanPlayers = AllianceRuleEngine.clearAlliances(state.players)
                     state.copy(
                         currentPhase = message.initialPhase,
                         currentScreen = Screen.PHASE1,
-                        selectedTargetPlayer = state.players.firstOrNull { it.id != myPlayerId },
+                        players = cleanPlayers,
+                        selectedTargetPlayer = cleanPlayers.firstOrNull { it.id != myPlayerId },
                         hasSubmittedAction = false,
                         submittedActions = emptyMap(),
+                        pendingAllianceRequests = emptyList(),
+                        incomingAllianceRequest = null,
+                        allianceNotice = "",
+                        chatMessages = state.chatMessages.filterNot { it.isAllianceChat },
                         systemBroadcast = message.systemBroadcast
                     )
                 }
@@ -315,6 +420,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
             is MsgSubmitAction -> {
                 if (_uiState.value.isHost) {
+                    if (AllianceRuleEngine.areAllied(_uiState.value.players, message.attackerId, message.targetId) &&
+                        (message.actionType == ActionType.DUEL || message.actionType == ActionType.RAID)
+                    ) {
+                        broadcastToAll(MsgActionRejected(message.attackerId, "盟友之间不能互相攻打"))
+                        if (message.attackerId == myPlayerId) {
+                            _uiState.update {
+                                it.copy(
+                                    hasSubmittedAction = false,
+                                    allianceNotice = "盟友之间不能互相攻打"
+                                )
+                            }
+                        }
+                        return
+                    }
+
                     var msgsToBroadcast: List<NetworkMessage>? = null
 
                     // 1. 将提交记录和人数比对完全放入原子级的 update 中，防止并发漏判
@@ -352,6 +472,222 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     // 2. 在安全域外执行广播，实现立即跳转
                     msgsToBroadcast?.let { msgs ->
                         broadcastToAll(*msgs.toTypedArray())
+                    }
+                }
+            }
+
+            is MsgChat -> {
+                if (message.isAllianceChat && message.recipientPlayerId == null) return
+
+                if (_uiState.value.isHost) {
+                    if (message.isAllianceChat) {
+                        val recipientId = message.recipientPlayerId ?: return
+                        if (!AllianceRuleEngine.areAllied(_uiState.value.players, message.senderId, recipientId)) {
+                            if (message.senderId == myPlayerId) {
+                                _uiState.update { it.copy(allianceNotice = "只能向当前盟友发送私聊") }
+                            } else {
+                                broadcastToAll(
+                                    MsgAllianceResult(
+                                        players = _uiState.value.players,
+                                        recipientPlayerId = message.senderId,
+                                        notice = "只能向当前盟友发送私聊"
+                                    )
+                                )
+                            }
+                            return
+                        }
+                    }
+
+                    appendChatMessageIfVisible(message)
+                    sendChatToRecipients(message)
+                } else {
+                    appendChatMessageIfVisible(message)
+                }
+            }
+
+            is MsgAllianceRequest -> {
+                if (_uiState.value.isHost) {
+                    val state = _uiState.value
+                    val check = AllianceRuleEngine.canRequestAlliance(
+                        players = state.players,
+                        fromPlayerId = message.fromPlayerId,
+                        toPlayerId = message.toPlayerId,
+                        pendingRequests = state.pendingAllianceRequests
+                    )
+
+                    if (!check.allowed) {
+                        broadcastToAll(
+                            MsgAllianceResult(
+                                players = state.players,
+                                recipientPlayerId = message.fromPlayerId,
+                                notice = check.reason
+                            )
+                        )
+                        if (message.fromPlayerId == myPlayerId) {
+                            _uiState.update { it.copy(allianceNotice = check.reason) }
+                        }
+                    } else {
+                        val request = AllianceRequest(
+                            requestId = message.requestId,
+                            fromPlayerId = message.fromPlayerId,
+                            fromPlayerName = message.fromPlayerName,
+                            toPlayerId = message.toPlayerId,
+                            expireTime = System.currentTimeMillis() + 10000
+                        )
+                        _uiState.update {
+                            it.copy(
+                                pendingAllianceRequests = it.pendingAllianceRequests + request,
+                                incomingAllianceRequest = if (request.toPlayerId == myPlayerId) request else it.incomingAllianceRequest
+                            )
+                        }
+                        broadcastToAll(
+                            MsgAllianceResult(
+                                players = state.players,
+                                pendingRequest = request,
+                                recipientPlayerId = request.toPlayerId,
+                                notice = "${request.fromPlayerName} 向你发起结盟"
+                            )
+                        )
+                    }
+                }
+            }
+
+            is MsgAllianceResponse -> {
+                if (_uiState.value.isHost) {
+                    val state = _uiState.value
+                    val request = state.pendingAllianceRequests.find { it.requestId == message.requestId }
+                    if (request == null) {
+                        broadcastToAll(
+                            MsgAllianceResult(
+                                players = state.players,
+                                recipientPlayerId = message.toPlayerId,
+                                notice = "结盟请求已失效"
+                            )
+                        )
+                        return
+                    }
+
+                    val remainingRequests = state.pendingAllianceRequests.filterNot { it.requestId == message.requestId }
+
+                    if (!message.accepted) {
+                        val notice = "对方拒绝了结盟请求"
+                        _uiState.update {
+                            it.copy(
+                                pendingAllianceRequests = remainingRequests,
+                                incomingAllianceRequest = if (it.incomingAllianceRequest?.requestId == message.requestId) null else it.incomingAllianceRequest,
+                                allianceNotice = when (myPlayerId) {
+                                    message.fromPlayerId -> notice
+                                    message.toPlayerId -> "已拒绝结盟请求"
+                                    else -> it.allianceNotice
+                                }
+                            )
+                        }
+                        broadcastToAll(
+                            MsgAllianceResult(
+                                players = state.players,
+                                recipientPlayerId = message.fromPlayerId,
+                                notice = notice
+                            ),
+                            MsgAllianceResult(
+                                players = state.players,
+                                recipientPlayerId = message.toPlayerId,
+                                notice = "已拒绝结盟请求"
+                            )
+                        )
+                    } else {
+                        val recheck = AllianceRuleEngine.canRequestAlliance(
+                            players = state.players,
+                            fromPlayerId = message.fromPlayerId,
+                            toPlayerId = message.toPlayerId,
+                            pendingRequests = remainingRequests
+                        )
+                        if (!recheck.allowed) {
+                            _uiState.update { it.copy(pendingAllianceRequests = remainingRequests) }
+                            broadcastToAll(
+                                MsgAllianceResult(
+                                    players = state.players,
+                                    recipientPlayerId = message.fromPlayerId,
+                                    notice = recheck.reason
+                                ),
+                                MsgAllianceResult(
+                                    players = state.players,
+                                    recipientPlayerId = message.toPlayerId,
+                                    notice = "结盟已无法成立"
+                                )
+                            )
+                        } else {
+                            val updatedPlayers = AllianceRuleEngine.applyAlliance(
+                                state.players,
+                                message.fromPlayerId,
+                                message.toPlayerId
+                            )
+                            val fromName = updatedPlayers.find { it.id == message.fromPlayerId }?.name ?: "对方"
+                            val toName = updatedPlayers.find { it.id == message.toPlayerId }?.name ?: "对方"
+                            _uiState.update {
+                                it.copy(
+                                    players = updatedPlayers,
+                                    pendingAllianceRequests = remainingRequests,
+                                    incomingAllianceRequest = null,
+                                    allianceNotice = if (message.fromPlayerId == myPlayerId || message.toPlayerId == myPlayerId) {
+                                        "结盟成功，本回合不可互相攻打"
+                                    } else {
+                                        it.allianceNotice
+                                    }
+                                )
+                            }
+                            broadcastToAll(
+                                MsgAllianceResult(
+                                    players = updatedPlayers,
+                                    recipientPlayerId = message.fromPlayerId,
+                                    alliancePartnerId = message.toPlayerId,
+                                    notice = "你已与 $toName 结盟"
+                                ),
+                                MsgAllianceResult(
+                                    players = updatedPlayers,
+                                    recipientPlayerId = message.toPlayerId,
+                                    alliancePartnerId = message.fromPlayerId,
+                                    notice = "你已与 $fromName 结盟"
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            is MsgAllianceResult -> {
+                if (message.recipientPlayerId == null || message.recipientPlayerId == myPlayerId) {
+                    _uiState.update { state ->
+                        val localPlayers = if (message.alliancePartnerId != null) {
+                            state.players.map { player ->
+                                if (player.id == myPlayerId) {
+                                    player.copy(
+                                        isSelf = true,
+                                        status = PlayerStatus.ALLIANCED,
+                                        alliancePartnerId = message.alliancePartnerId
+                                    )
+                                } else {
+                                    player.copy(isSelf = false)
+                                }
+                            }
+                        } else {
+                            state.players
+                        }
+                        state.copy(
+                            players = localPlayers,
+                            incomingAllianceRequest = message.pendingRequest ?: state.incomingAllianceRequest,
+                            allianceNotice = message.notice.ifBlank { state.allianceNotice }
+                        )
+                    }
+                }
+            }
+
+            is MsgActionRejected -> {
+                if (message.playerId == myPlayerId) {
+                    _uiState.update {
+                        it.copy(
+                            hasSubmittedAction = false,
+                            allianceNotice = message.notice
+                        )
                     }
                 }
             }
@@ -418,6 +754,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                     } else {
                                         // 触发冷却
                                         triggerEndOfEra = true
+                                        msgsToBroadcast = listOf(
+                                            MsgRoomStateSync(updatedPlayers, resultMsg, newQueue),
+                                            MsgEventSync(state.currentEventIndex, fullyConfirmedEvent, resultMsg)
+                                        )
                                         state.copy(players = updatedPlayers, systemBroadcast = resultMsg, currentEvent = fullyConfirmedEvent, eventQueue = newQueue, canProceedToNextDay = true)
                                     }
                                 }
@@ -479,11 +819,67 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun handlePlayerJoin(msg: MsgJoinRoom) {
         val currentState = _uiState.value
-        if (currentState.players.any { it.id == msg.playerId }) return
+        if (currentState.players.any { it.id == msg.playerId }) {
+            syncCurrentStateToClients(currentState)
+            return
+        }
+
         val newPlayer = Player(id = msg.playerId, name = msg.playerName, isSelf = false)
         val updatedPlayers = currentState.players + newPlayer
         _uiState.update { it.copy(players = updatedPlayers) }
-        viewModelScope.launch { gameServer?.broadcast(MsgRoomStateSync(players = updatedPlayers)) }
+        syncCurrentStateToClients(_uiState.value)
+    }
+
+    private fun syncCurrentStateToClients(state: GameUiState) {
+        val messages = mutableListOf<NetworkMessage>()
+        messages.add(MsgRoomStateSync(state.players, state.systemBroadcast, state.eventQueue))
+
+        when (state.currentPhase) {
+            GamePhase.PHASE_1 -> {
+                if (state.currentScreen != Screen.WAITING_ROOM) {
+                    messages.add(MsgGameStart(GamePhase.PHASE_1, state.systemBroadcast))
+                }
+            }
+            GamePhase.PHASE_2 -> {
+                val currentEvent = state.currentEvent
+                if (currentEvent != null) {
+                    messages.add(MsgEventSync(state.currentEventIndex, currentEvent, state.systemBroadcast))
+                }
+            }
+        }
+
+        broadcastToAll(*messages.toTypedArray())
+    }
+
+    private fun appendChatMessageIfVisible(message: MsgChat) {
+        if (message.isAllianceChat) {
+            val recipientId = message.recipientPlayerId ?: return
+            if (message.senderId != myPlayerId && recipientId != myPlayerId) return
+        }
+
+        val chatMessage = ChatMessage(
+            id = "chat_${message.senderId}_${System.currentTimeMillis()}",
+            senderId = message.senderId,
+            senderName = message.senderName,
+            senderAvatarUrl = "",
+            content = message.content,
+            recipientPlayerId = message.recipientPlayerId,
+            isAllianceChat = message.isAllianceChat
+        )
+        _uiState.update { state ->
+            state.copy(chatMessages = (state.chatMessages + chatMessage).takeLast(80))
+        }
+    }
+
+    private fun sendChatToRecipients(message: MsgChat) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (message.isAllianceChat) {
+                val recipientId = message.recipientPlayerId ?: return@launch
+                gameServer?.sendToPlayers(setOf(message.senderId, recipientId), message)
+            } else {
+                gameServer?.broadcast(message)
+            }
+        }
     }
 
     /**
@@ -495,7 +891,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val welcomeMsg = "—— 第 $nextDay 天 · 气机复苏 ——"
 
         // 【核心修复】：在天亮时，立刻核算新一天的天道庇佑！
-        val updatedPlayers = GameRuleEngine.assignHeavenProtection(_uiState.value.players)
+        val updatedPlayers = GameRuleEngine.assignHeavenProtection(
+            AllianceRuleEngine.clearAlliances(_uiState.value.players)
+        )
 
         _uiState.update { state ->
             state.copy(
@@ -504,6 +902,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 currentScreen = Screen.PHASE1,
                 hasSubmittedAction = false,
                 submittedActions = emptyMap(),
+                pendingAllianceRequests = emptyList(),
+                incomingAllianceRequest = null,
+                allianceNotice = "",
+                chatMessages = state.chatMessages.filterNot { it.isAllianceChat },
                 eventQueue = emptyList(),
                 currentEvent = null,
                 systemBroadcast = welcomeMsg,
@@ -536,9 +938,56 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 客机发送专用：切入 IO 线程，绝不卡顿点击动画
      */
+    private fun ensureHostServerRunning() {
+        val server = gameServer ?: return
+        if (server.isRunning()) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            server.start(viewModelScope)
+        }
+    }
+
+    private fun scheduleClientReconnect(immediate: Boolean = false) {
+        if (_uiState.value.isHost || _uiState.value.currentScreen == Screen.HOME) return
+        if (joinedRoomIp.isNullOrEmpty()) return
+        if (reconnectJob?.isActive == true) return
+
+        reconnectJob = viewModelScope.launch(Dispatchers.IO) {
+            if (!immediate) {
+                delay(500)
+            }
+            connectToHostAndJoin()
+        }
+    }
+
+    private suspend fun connectToHostAndJoin(): Boolean {
+        val ip = joinedRoomIp ?: return false
+        if (ip.isEmpty()) return false
+
+        val connected = if (gameClient.isConnected()) {
+            true
+        } else {
+            gameClient.connect(viewModelScope, ip, joinedRoomPort)
+        }
+
+        if (!connected) return false
+
+        val joinMessage = MsgJoinRoom(myPlayerId, _uiState.value.myPlayerName)
+        val joined = gameClient.sendMessage(joinMessage)
+        if (!joined) {
+            val reconnected = gameClient.connect(viewModelScope, ip, joinedRoomPort)
+            return reconnected && gameClient.sendMessage(joinMessage)
+        }
+
+        return true
+    }
+
     private fun sendToServer(msg: NetworkMessage) {
         viewModelScope.launch(Dispatchers.IO) {
-            gameClient.sendMessage(msg)
+            if (!gameClient.sendMessage(msg) && connectToHostAndJoin()) {
+                delay(50)
+                gameClient.sendMessage(msg)
+            }
         }
     }
 
@@ -556,6 +1005,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        reconnectJob?.cancel()
         nsdHelper.stopEverything()
         gameClient.disconnect()
         gameServer?.stop()

@@ -17,7 +17,8 @@ data class Player(
     var spiritVeins: Int = 100,
     var status: PlayerStatus = PlayerStatus.IDLE,
     var silkBag: Int = 0,
-    var hasHeavenProtection: Boolean = false
+    var hasHeavenProtection: Boolean = false,
+    val alliancePartnerId: String? = null
 )
 
 @Serializable

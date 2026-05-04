@@ -9,6 +9,7 @@ data class ChatMessage(
     val senderName: String,
     val senderAvatarUrl: String,
     val content: String,
+    val recipientPlayerId: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
     val isSystemMessage: Boolean = false,
     val isAllianceChat: Boolean = false
@@ -16,7 +17,9 @@ data class ChatMessage(
 
 @Serializable
 data class AllianceRequest(
-    val fromPlayer: Player,
-    val toPlayer: Player,
+    val requestId: String,
+    val fromPlayerId: String,
+    val fromPlayerName: String,
+    val toPlayerId: String,
     val expireTime: Long
 )

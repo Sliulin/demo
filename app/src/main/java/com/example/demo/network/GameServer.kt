@@ -1,6 +1,7 @@
 package com.example.demo.network
 
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -14,87 +15,142 @@ import java.net.Socket
 
 class GameServer(
     private val port: Int = 9999,
-    private val onMessageReceived: (NetworkMessage) -> Unit // 当收到任何玩家消息时的回调
+    private val onMessageReceived: (NetworkMessage) -> Unit
 ) {
-    private val TAG = "GameServer"
+    private val tag = "GameServer"
     private var serverSocket: ServerSocket? = null
-    private var isRunning = false
+    @Volatile private var isRunning = false
 
-    // 保存所有连进来的玩家的输出流，方便群发消息
     private val clientWriters = mutableListOf<PrintWriter>()
-
-    // 配置 JSON 解析器（忽略未知字段，避免崩溃）
+    private val writerPlayerIds = mutableMapOf<PrintWriter, String>()
     private val jsonConfig = Json { ignoreUnknownKeys = true }
 
-    // 启动服务器（必须在协程的 IO 线程调用）
-    suspend fun start() = withContext(Dispatchers.IO) {
+    suspend fun start(scope: CoroutineScope) = withContext(Dispatchers.IO) {
         if (isRunning) return@withContext
         isRunning = true
 
         try {
+            serverSocket?.close()
             serverSocket = ServerSocket(port)
-            Log.d(TAG, "服务器已启动，正在监听端口 $port...")
+            Log.d(tag, "Server started on port $port")
 
             while (isRunning) {
                 val clientSocket = serverSocket?.accept() ?: break
-                Log.d(TAG, "新玩家已连接")
+                Log.d(tag, "Client connected")
 
-                // 【关键修复】：为每个连进来的玩家启动独立协程，不要阻塞主循环
-                kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                scope.launch(Dispatchers.IO) {
                     handleClient(clientSocket)
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "服务器异常: ${e.message}")
+            if (isRunning) {
+                Log.e(tag, "Server error: ${e.message}", e)
+            }
+        } finally {
+            isRunning = false
         }
     }
 
     private suspend fun handleClient(socket: Socket) = withContext(Dispatchers.IO) {
+        var writer: PrintWriter? = null
         try {
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), "UTF-8"))
-            val writer = PrintWriter(socket.getOutputStream(), true)
-            
-            // 将新玩家的输出流加入集合
-            synchronized(clientWriters) { clientWriters.add(writer) }
+            socket.tcpNoDelay = true
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+            writer = PrintWriter(socket.getOutputStream(), true)
 
-            // 死循环监听该玩家发来的消息
+            synchronized(clientWriters) {
+                clientWriters.add(writer)
+            }
+
             while (isRunning) {
-                val jsonString = reader.readLine() ?: break // 如果读到 null，说明玩家断开了
-                Log.d(TAG, "收到消息: $jsonString")
-                
-                // 将 JSON 字符串反序列化为 NetworkMessage 对象，并传给 ViewModel
+                val jsonString = reader.readLine() ?: break
+                Log.d(tag, "Received message: $jsonString")
+
                 try {
                     val message = jsonConfig.decodeFromString<NetworkMessage>(jsonString)
+                    if (message is MsgJoinRoom) {
+                        synchronized(clientWriters) {
+                            writerPlayerIds[writer] = message.playerId
+                        }
+                    }
                     onMessageReceived(message)
                 } catch (e: Exception) {
-                    Log.e(TAG, "消息解析失败: $jsonString", e)
+                    Log.e(tag, "Failed to parse message: $jsonString", e)
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "玩家连接断开")
+            Log.e(tag, "Client connection closed: ${e.message}")
         } finally {
-            socket.close()
+            synchronized(clientWriters) {
+                writer?.let {
+                    clientWriters.remove(it)
+                    writerPlayerIds.remove(it)
+                }
+            }
+            try {
+                socket.close()
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to close client socket", e)
+            }
         }
     }
 
-    // 房主专用：将消息广播给房间里的所有人（包括自己）
     suspend fun broadcast(message: NetworkMessage) = withContext(Dispatchers.IO) {
         try {
             val jsonString = jsonConfig.encodeToString(message)
             synchronized(clientWriters) {
+                val failedWriters = mutableListOf<PrintWriter>()
                 clientWriters.forEach { writer ->
                     writer.println(jsonString)
+                    if (writer.checkError()) {
+                        failedWriters.add(writer)
+                    }
+                }
+                clientWriters.removeAll(failedWriters)
+            }
+            Log.d(tag, "Broadcast message: $jsonString")
+        } catch (e: Exception) {
+            Log.e(tag, "Broadcast failed", e)
+        }
+    }
+
+    suspend fun sendToPlayers(playerIds: Set<String>, message: NetworkMessage) = withContext(Dispatchers.IO) {
+        try {
+            val jsonString = jsonConfig.encodeToString(message)
+            synchronized(clientWriters) {
+                val failedWriters = mutableListOf<PrintWriter>()
+                clientWriters.forEach { writer ->
+                    if (writerPlayerIds[writer] in playerIds) {
+                        writer.println(jsonString)
+                        if (writer.checkError()) {
+                            failedWriters.add(writer)
+                        }
+                    }
+                }
+                failedWriters.forEach {
+                    clientWriters.remove(it)
+                    writerPlayerIds.remove(it)
                 }
             }
-            Log.d(TAG, "广播消息: $jsonString")
+            Log.d(tag, "Send private message: $jsonString")
         } catch (e: Exception) {
-            Log.e(TAG, "广播失败", e)
+            Log.e(tag, "Private send failed", e)
         }
     }
 
     fun stop() {
         isRunning = false
-        serverSocket?.close()
-        clientWriters.clear()
+        try {
+            serverSocket?.close()
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to close server socket", e)
+        }
+        synchronized(clientWriters) {
+            clientWriters.forEach { it.close() }
+            clientWriters.clear()
+            writerPlayerIds.clear()
+        }
     }
+
+    fun isRunning(): Boolean = isRunning
 }

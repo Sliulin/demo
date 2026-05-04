@@ -121,60 +121,73 @@ object GameRuleEngine {
         val decision = event.hostDecisionIndex ?: 0
         val baseStake = event.stake
         val ghostPower = event.karmicInfluence
+        val veinChanges = mutableMapOf<String, Int>()
+        val silkBagChanges = mutableMapOf<String, Int>()
 
-        return currentPlayers.map { player ->
-            var v = player.spiritVeins
-            var bags = player.silkBag // 需要在 Player.kt 中预留 val silkBag: Int = 0
+        fun applyTransfer(winnerId: String, loserId: String, base: Int) {
+            val winners = allianceSide(currentPlayers, winnerId)
+            val losers = allianceSide(currentPlayers, loserId)
+            if (winners.isEmpty() || losers.isEmpty() || base <= 0) return
 
-            val isAttacker = (player.id == event.attacker.id)
-            val isDefender = (player.id == event.defender.id && !isAttacker)
+            val totalBase = base * maxOf(winners.size, losers.size)
+            val basePerWinner = totalBase / winners.size
+            val remainder = totalBase % winners.size
 
-            // ================= 四大法门因果核算 =================
-            when (event.actionType) {
-                ActionType.DUEL -> {
-                    when (decision) {
-                        0 -> { // 斗法成功：败方给胜方全部赌注
-                            if (isAttacker) v += calculateGain(player, baseStake, ghostPower)
-                            if (isDefender) v -= baseStake
-                        }
-                        1 -> { // 斗法失败：攻方反噬，给守方赌注
-                            if (isAttacker) v -= baseStake
-                            if (isDefender) v += baseStake
-                        }
-                        2 -> { // 对方投降：给一半灵脉
-                            val half = baseStake / 2
-                            if (isAttacker) v += calculateGain(player, half, ghostPower)
-                            if (isDefender) v -= half
-                        }
-                    }
-                }
-                ActionType.RAID -> {
-                    when (decision) {
-                        0 -> { // 奇袭成功
-                            if (isAttacker) v += calculateGain(player, 10, ghostPower)
-                            if (isDefender) v -= 10
-                        }
-                        1 -> { // 奇袭失败：无事发生
-                        }
-                        2 -> { // 被防御：奇袭者反赔给被奇袭者10条
-                            if (isAttacker) v -= 10
-                            if (isDefender) v += 10
-                        }
-                    }
-                }
-                ActionType.DEFEND_ARRAY -> {
-                    // 基础防御逻辑已在上述 RAID 联动中扣除。此处可做额外扩展（如：成功防御奖励造化）
-                    if (isAttacker && decision == 1) {
-                        // 预留位置
-                    }
-                }
-                ActionType.EXPLORE -> {
-                    if (isAttacker) {
-                        if (decision == 0) v += calculateGain(player, 5, ghostPower) // 获得灵脉
-                        if (decision == 1) bags += 1 // 获得锦囊
-                    }
+            winners.forEachIndexed { index, winner ->
+                val gainBase = basePerWinner + if (index < remainder) 1 else 0
+                val gain = calculateGain(winner, gainBase, ghostPower)
+                veinChanges[winner.id] = (veinChanges[winner.id] ?: 0) + gain
+            }
+
+            losers.forEach { loser ->
+                veinChanges[loser.id] = (veinChanges[loser.id] ?: 0) - base
+            }
+        }
+
+        fun applyExploreReward(playerId: String, base: Int) {
+            val winners = allianceSide(currentPlayers, playerId)
+            if (winners.isEmpty() || base <= 0) return
+
+            winners.forEach { winner ->
+                val gain = calculateGain(winner, base, ghostPower)
+                veinChanges[winner.id] = (veinChanges[winner.id] ?: 0) + gain
+            }
+        }
+
+        fun applySilkBagReward(playerId: String) {
+            allianceSide(currentPlayers, playerId).forEach { winner ->
+                silkBagChanges[winner.id] = (silkBagChanges[winner.id] ?: 0) + 1
+            }
+        }
+
+        // ================= 四大法门因果核算 =================
+        when (event.actionType) {
+            ActionType.DUEL -> {
+                when (decision) {
+                    0 -> applyTransfer(event.attacker.id, event.defender.id, baseStake)
+                    1 -> applyTransfer(event.defender.id, event.attacker.id, baseStake)
+                    2 -> applyTransfer(event.attacker.id, event.defender.id, baseStake / 2)
                 }
             }
+            ActionType.RAID -> {
+                when (decision) {
+                    0 -> applyTransfer(event.attacker.id, event.defender.id, 10)
+                    1 -> {}
+                    2 -> applyTransfer(event.defender.id, event.attacker.id, 10)
+                }
+            }
+            ActionType.DEFEND_ARRAY -> {
+                // 基础防御逻辑已在 RAID 联动中结算。
+            }
+            ActionType.EXPLORE -> {
+                if (decision == 0) applyExploreReward(event.attacker.id, 5)
+                if (decision == 1) applySilkBagReward(event.attacker.id)
+            }
+        }
+
+        return currentPlayers.map { player ->
+            val v = player.spiritVeins + (veinChanges[player.id] ?: 0)
+            val bags = player.silkBag + (silkBagChanges[player.id] ?: 0)
 
             // ================= 强制规则兜底 =================
             val finalVeins = v.coerceAtLeast(0) // 防止灵脉出现负数
@@ -185,6 +198,21 @@ object GameRuleEngine {
                 status = newStatus,
                 silkBag = bags
             )
+        }
+    }
+
+    private fun allianceSide(players: List<Player>, playerId: String): List<Player> {
+        val player = players.find { it.id == playerId } ?: return emptyList()
+        if (player.status == PlayerStatus.ELIMINATED) return emptyList()
+
+        val partner = player.alliancePartnerId
+            ?.let { partnerId -> players.find { it.id == partnerId } }
+            ?.takeIf { it.status != PlayerStatus.ELIMINATED && it.alliancePartnerId == player.id }
+
+        return if (partner != null) {
+            listOf(player, partner)
+        } else {
+            listOf(player)
         }
     }
 
