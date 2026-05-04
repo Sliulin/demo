@@ -42,6 +42,9 @@ import com.example.demo.ui.theme.DemoTheme
 import com.example.demo.viewmodel.GameViewModel
 import com.example.demo.viewmodel.Screen
 
+/**
+ * 应用入口 Activity，承载 Compose 导航树。
+ */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,6 +62,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * 将 GameUiState 中的页面状态映射到 Compose 导航目的地。
+ */
 @Composable
 fun AppNavigation(viewModel: GameViewModel = viewModel()) {
     val navController = rememberNavController()
@@ -87,7 +93,6 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
         if (navController.currentDestination?.route != route) {
             navController.navigate(route) {
                 launchSingleTop = true
-                // 【新增】：如果目标是回到首页，清空之前的导航栈，防止页面层层叠叠
                 if (route == "home") {
                     popUpTo("home") { inclusive = false }
                 }
@@ -103,10 +108,12 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 isScanning = uiState.isScanning,
                 isRefreshing = uiState.isRefreshing,
                 onRefresh = { viewModel.refreshRooms() },
-                myPlayerName = uiState.myPlayerName, // 【新增】传入全局昵称
-                onUpdateName = { newName -> viewModel.updatePlayerName(newName) }, // 【新增】修改昵称的回调
-                onRoomClick = { room -> viewModel.joinRoom(room) }, // 【修改】不再需要传名字
-                onCreateRoom = { roomName -> viewModel.createRoom(roomName) } // 【修改】不再需要传名字
+                myPlayerName = uiState.myPlayerName,
+                isTestModeEnabled = uiState.isTestModeEnabled,
+                onUpdateTestMode = { enabled -> viewModel.updateTestModeEnabled(enabled) },
+                onUpdateName = { newName -> viewModel.updatePlayerName(newName) },
+                onRoomClick = { room -> viewModel.joinRoom(room) },
+                onCreateRoom = { roomName -> viewModel.createRoom(roomName) }
             )
         }
         composable("waiting_room") {
@@ -114,7 +121,7 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 players = uiState.players,
                 isHost = uiState.isHost,
                 onStartGame = { viewModel.startGame() },
-                onLeaveRoom = { viewModel.leaveRoom() } // 【新增】：触发 ViewModel 的清理逻辑
+                onLeaveRoom = { viewModel.leaveRoom() }
             )
         }
 
@@ -123,12 +130,29 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 players = uiState.players,
                 hasSubmittedAction = uiState.hasSubmittedAction,
                 incomingAllianceRequest = uiState.incomingAllianceRequest,
+                incomingConspiracyRequest = uiState.incomingConspiracyRequest,
+                conspiracySessions = uiState.conspiracySessions,
+                allianceActionPlans = uiState.allianceActionPlans,
                 allianceNotice = uiState.allianceNotice,
+                conspiracyNotice = uiState.conspiracyNotice,
                 chatMessages = uiState.chatMessages,
+                dayNumber = uiState.dayNumber,
                 isHost = uiState.isHost,
+                isTestModeEnabled = uiState.isTestModeEnabled,
                 submittedCount = uiState.submittedActions.size,
+                debugNextDayNumber = uiState.debugNextDayNumber,
+                debugNextDaySpiritVeins = uiState.debugNextDaySpiritVeins,
                 onActionSubmit = { target, actionType, stake ->
                     viewModel.submitAction(target, actionType, stake)
+                },
+                onConspiracyRequest = { target ->
+                    viewModel.requestConspiracy(target)
+                },
+                onConspiracyResponse = { request, accepted ->
+                    viewModel.respondConspiracy(request, accepted)
+                },
+                onConspiracyChatSend = { sessionId, content ->
+                    viewModel.sendConspiracyChat(sessionId, content)
                 },
                 onAllianceRequest = { target ->
                     viewModel.requestAlliance(target)
@@ -136,30 +160,48 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 onAllianceResponse = { request, accepted ->
                     viewModel.respondAlliance(request, accepted)
                 },
+                onAllianceActionPlanPropose = { target, actionType, stake, rewardShare, penaltyShare ->
+                    viewModel.proposeAllianceActionPlan(target, actionType, stake, rewardShare, penaltyShare)
+                },
+                onAllianceActionPlanConfirm = { plan ->
+                    viewModel.confirmAllianceActionPlan(plan)
+                },
                 onAllianceChatSend = { content ->
                     viewModel.sendAllianceChat(content)
                 },
-                onForceProceed = { viewModel.restartPhase1() } // 根据您采用的方案调用
+                onDebugNextDayChange = { dayNumber ->
+                    viewModel.setDebugNextDayNumber(dayNumber)
+                },
+                onDebugSpiritVeinsChange = { playerId, spiritVeins ->
+                    viewModel.setDebugNextDaySpiritVeins(playerId, spiritVeins)
+                },
+                onClearDebugSettings = {
+                    viewModel.clearDebugNextDaySettings()
+                },
+                onForceProceed = { viewModel.restartPhase1() }
             )
         }
 
         composable(route = "phase2") {
             val currentEvent = uiState.currentEvent ?: return@composable
-            // 从玩家列表中找到“自己”
             val self = uiState.players.find { it.isSelf } ?: return@composable
 
             Phase2Screen(
-                eventQueue = uiState.eventQueue, // 传入完整队列
+                eventQueue = uiState.eventQueue,
                 currentEventIndex = uiState.currentEventIndex,
                 systemBroadcast = uiState.systemBroadcast,
                 isHost = uiState.isHost,
                 selfPlayer = self,
                 players = uiState.players,
-                dayNumber = uiState.dayNumber, // 把 viewModel 里的天数传进去
+                dayNumber = uiState.dayNumber,
                 isGameOver = uiState.isGameOver,
                 canProceedToNextDay = uiState.canProceedToNextDay,
                 onHostDecideIndex = { index -> viewModel.submitHostDecisionIndex(index) },
                 onVote = { isConfirm -> viewModel.castVote(isConfirm) },
+                onAllianceBetrayal = { eventId -> viewModel.declareAllianceBetrayal(eventId) },
+                onAllianceBetrayalResult = { eventId, betrayerId, succeeded ->
+                    viewModel.submitAllianceBetrayalResult(eventId, betrayerId, succeeded)
+                },
                 onGhostInterfere = { isBlessing -> viewModel.submitGhostInterference(isBlessing) },
                 onProceedToNextDay = { viewModel.proceedToNextDay() },
                 onRestartEvent = { viewModel.restartCurrentEvent() }
@@ -168,6 +210,9 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
     }
 }
 
+/**
+ * 开局前的房间等待页。
+ */
 @Composable
 private fun WaitingRoomScreen(
     players: List<Player>,
@@ -200,6 +245,8 @@ private fun WaitingRoomScreen(
                     Text(text = player.name, fontWeight = FontWeight.Bold)
                     if (player.isHost) {
                         Text(text = " (房主)", color = Color.Gray)
+                    } else if (player.isBot) {
+                        Text(text = " (机器人)", color = Color.Gray)
                     }
                 }
             }

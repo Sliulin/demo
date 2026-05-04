@@ -13,6 +13,9 @@ import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
 
+/**
+ * 房主设备持有的权威 TCP 服务端。
+ */
 class GameServer(
     private val port: Int = 9999,
     private val onMessageReceived: (NetworkMessage) -> Unit
@@ -25,6 +28,9 @@ class GameServer(
     private val writerPlayerIds = mutableMapOf<PrintWriter, String>()
     private val jsonConfig = Json { ignoreUnknownKeys = true }
 
+    /**
+     * 开始接收客机连接，直到服务端被停止。
+     */
     suspend fun start(scope: CoroutineScope) = withContext(Dispatchers.IO) {
         if (isRunning) return@withContext
         isRunning = true
@@ -95,6 +101,9 @@ class GameServer(
         }
     }
 
+    /**
+     * 向所有已连接客机广播一条消息。
+     */
     suspend fun broadcast(message: NetworkMessage) = withContext(Dispatchers.IO) {
         try {
             val jsonString = jsonConfig.encodeToString(message)
@@ -114,6 +123,9 @@ class GameServer(
         }
     }
 
+    /**
+     * 只向指定玩家对应的客机发送一条消息。
+     */
     suspend fun sendToPlayers(playerIds: Set<String>, message: NetworkMessage) = withContext(Dispatchers.IO) {
         try {
             val jsonString = jsonConfig.encodeToString(message)
@@ -138,6 +150,9 @@ class GameServer(
         }
     }
 
+    /**
+     * 停止接收连接，并关闭所有活跃输出流。
+     */
     fun stop() {
         isRunning = false
         try {
@@ -152,5 +167,8 @@ class GameServer(
         }
     }
 
+    /**
+     * 返回房主 Socket 循环是否仍在运行。
+     */
     fun isRunning(): Boolean = isRunning
 }

@@ -1,3 +1,6 @@
+/**
+ * 单模块 Android 项目的仓库和模块入口配置。
+ */
 pluginManagement {
     repositories {
         google {
@@ -24,4 +27,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Demo"
 include(":app")
- 
+

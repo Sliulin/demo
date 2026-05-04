@@ -14,6 +14,9 @@ import java.io.PrintWriter
 import java.net.InetSocketAddress
 import java.net.Socket
 
+/**
+ * 客机使用的 TCP 客户端，负责与房主交换序列化游戏消息。
+ */
 class GameClient(
     private val onMessageReceived: (NetworkMessage) -> Unit,
     private val onDisconnected: () -> Unit = {}
@@ -26,6 +29,9 @@ class GameClient(
 
     private val jsonConfig = Json { ignoreUnknownKeys = true }
 
+    /**
+     * 连接房主 Socket，并启动后台监听。
+     */
     suspend fun connect(scope: CoroutineScope, ip: String, port: Int = 9999): Boolean = withContext(Dispatchers.IO) {
         disconnect(notify = false)
 
@@ -74,6 +80,9 @@ class GameClient(
         }
     }
 
+    /**
+     * 向房主发送一条序列化消息。
+     */
     suspend fun sendMessage(message: NetworkMessage): Boolean = withContext(Dispatchers.IO) {
         if (!isConnected || writer == null) {
             Log.w(tag, "Not connected, unable to send message")
@@ -96,6 +105,9 @@ class GameClient(
         }
     }
 
+    /**
+     * 关闭连接，并按需通知 ViewModel 连接已断开。
+     */
     fun disconnect(notify: Boolean = false) {
         val wasConnected = isConnected
         isConnected = false
@@ -119,5 +131,8 @@ class GameClient(
         }
     }
 
+    /**
+     * 返回当前 Socket 是否可用。
+     */
     fun isConnected(): Boolean = isConnected
 }

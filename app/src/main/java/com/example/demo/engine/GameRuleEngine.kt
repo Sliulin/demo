@@ -4,55 +4,73 @@ import com.example.demo.model.*
 import com.example.demo.network.MsgSubmitAction
 
 /**
- * 游戏核心规则引擎 (Domain Layer)
- * 负责处理所有的业务判定、灵脉核算、状态变迁等纯逻辑操作。
- * 不涉及任何网络通信和 UI 状态流。
+ * 游戏规则纯逻辑引擎，负责阶段转换、事件生成和结算计算。
  */
 object GameRuleEngine {
 
     /**
-     * 阶段 1 -> 阶段 2：刷新玩家的天道庇佑状态
-     * 规则：在所有存活玩家中，找出灵脉最少者，赋予天道庇佑 (+10% 收益)
+     * 为唯一灵脉最低的存活玩家刷新天道庇佑。
      */
     fun assignHeavenProtection(players: List<Player>): List<Player> {
         val alivePlayers = players.filter { it.status != PlayerStatus.ELIMINATED }
 
-        // 1. 找到全场的最低灵脉值
         val minVeins = alivePlayers.minOfOrNull { it.spiritVeins } ?: return players
 
-        // 2. 统计处于这个最低谷的玩家数量
         val bottomPlayersCount = alivePlayers.count { it.spiritVeins == minVeins }
 
-        // 3. 只有当“唯一”倒数第一时，才算作真正的弱势群体
         val isUniqueBottom = bottomPlayersCount == 1
 
         return players.map { player ->
             if (player.status != PlayerStatus.ELIMINATED) {
-                // 必须是唯一最低分，且本人的分数就是最低分，才给予庇佑
                 player.copy(hasHeavenProtection = (isUniqueBottom && player.spiritVeins == minVeins))
             } else {
-                // 幽魂游离三界之外，强制剥夺庇佑
                 player.copy(hasHeavenProtection = false)
             }
         }
     }
 
     /**
-     * 阶段 1 -> 阶段 2：生成事件队列
-     * 规则：气运鼎盛者（灵脉多）优先出手；并且系统会自动预判“奇袭撞护盾”的情况
+     * 根据当天提交的行动生成按灵脉排序的公开事件队列。
      */
     fun buildEventQueue(
         players: List<Player>,
         submittedActions: Map<String, MsgSubmitAction>,
-        dayNumber: Int
+        dayNumber: Int,
+        alliancePlans: List<AllianceActionPlan> = emptyList()
     ): List<GameEvent> {
-        // 只取存活的玩家，并按灵脉从大到小排序（气运鼎盛者先动）
         val sortedAlivePlayers = players
             .filter { it.status != PlayerStatus.ELIMINATED }
             .sortedByDescending { it.spiritVeins }
+        val confirmedAlliancePlans = alliancePlans.filter { it.isFullyConfirmed() }
+        val coveredAlliancePlayers = confirmedAlliancePlans
+            .flatMap { listOf(it.firstPlayerId, it.secondPlayerId) }
+            .toSet()
 
-        // ================= 第一步：生成有效事件，并剔除多余事件 =================
         val validEvents = sortedAlivePlayers.mapNotNull { attacker ->
+            val alliancePlan = confirmedAlliancePlans.find { it.firstPlayerId == attacker.id }
+            if (alliancePlan != null) {
+                val partner = players.find { it.id == alliancePlan.secondPlayerId } ?: return@mapNotNull null
+                val defender = players.find { it.id == alliancePlan.targetId } ?: return@mapNotNull null
+                return@mapNotNull GameEvent(
+                    id = "event_${System.currentTimeMillis()}_${attacker.id}_${partner.id}",
+                    attacker = attacker,
+                    defender = defender,
+                    actionType = alliancePlan.actionType,
+                    dayNumber = dayNumber,
+                    eventIndex = 0,
+                    totalEvents = 0,
+                    stake = alliancePlan.stake,
+                    karmicInfluence = 0,
+                    totalPlayers = players.size,
+                    confirmCount = 0,
+                    isAllianceAction = true,
+                    alliancePartner = partner,
+                    allianceActionPlan = alliancePlan,
+                    systemMemo = "【同盟】${attacker.name} 与 ${partner.name} 发动同盟行动，总收益/惩罚 x3。"
+                )
+            }
+            if (coveredAlliancePlayers.contains(attacker.id)) return@mapNotNull null
+
             val myAction = submittedActions[attacker.id] ?: return@mapNotNull null
             val targetAction = submittedActions[myAction.targetId]
             val defender = players.find { it.id == myAction.targetId } ?: return@mapNotNull null
@@ -63,19 +81,15 @@ object GameRuleEngine {
 
             when (myAction.actionType) {
                 ActionType.RAID -> {
-                    // 如果目标刚好开启了护宗大阵
                     if (targetAction?.actionType == ActionType.DEFEND_ARRAY) {
                         isSystemDetermined = true
-                        systemIndex = 2 // 对应 RAID 的 "被防御" 选项
+                        systemIndex = 2
                         memo = "【系统】目标已开启护宗大阵，奇袭受挫！"
                     }
                 }
                 ActionType.DEFEND_ARRAY -> {
-                    // 检查是否有人（任何人）奇袭了自己
                     val isRaided = submittedActions.values.any { it.targetId == attacker.id && it.actionType == ActionType.RAID }
 
-                    // 【核心修改】：如果被奇袭了（防御成功），因为反伤灵脉已在奇袭者的事件里结算完毕，
-                    // 所以这里直接返回 null，不在公开结算庭里产生独立的冗余事件！
                     if (isRaided) return@mapNotNull null
 
                     isSystemDetermined = true
@@ -85,15 +99,14 @@ object GameRuleEngine {
                 else -> {}
             }
 
-            // 构建事件（暂时不填序号）
             GameEvent(
                 id = "event_${System.currentTimeMillis()}_${attacker.id}",
                 attacker = attacker,
                 defender = defender,
                 actionType = myAction.actionType,
                 dayNumber = dayNumber,
-                eventIndex = 0, // 稍后统一编号
-                totalEvents = 0, // 稍后统一计算
+                eventIndex = 0,
+                totalEvents = 0,
                 stake = myAction.stake,
                 karmicInfluence = 0,
                 totalPlayers = players.size,
@@ -104,8 +117,6 @@ object GameRuleEngine {
             )
         }
 
-        // ================= 第二步：重新连续编号 =================
-        // 防止因为移除了防御事件，导致事件序号出现 1/4, 3/4 这种断层
         return validEvents.mapIndexed { index, event ->
             event.copy(
                 eventIndex = index + 1,
@@ -115,7 +126,7 @@ object GameRuleEngine {
     }
 
     /**
-     * 阶段 2 表决通过：核算灵脉吞吐，并判定道统是否断绝
+     * 将房主确认后的事件结果结算到当前玩家快照。
      */
     fun resolveEventOutcome(event: GameEvent, currentPlayers: List<Player>): List<Player> {
         val decision = event.hostDecisionIndex ?: 0
@@ -160,7 +171,98 @@ object GameRuleEngine {
             }
         }
 
-        // ================= 四大法门因果核算 =================
+        fun splitAmount(total: Int, shares: Map<String, Int>): Map<String, Int> {
+            val cleaned = shares.mapValues { it.value.coerceAtLeast(0) }
+            val shareTotal = cleaned.values.sum().takeIf { it > 0 } ?: return cleaned.mapValues { 0 }
+            var assigned = 0
+            val entries = cleaned.entries.toList()
+            return entries.mapIndexed { index, entry ->
+                val value = if (index == entries.lastIndex) {
+                    total - assigned
+                } else {
+                    (total * entry.value) / shareTotal
+                }
+                assigned += value
+                entry.key to value
+            }.toMap()
+        }
+
+        fun applyAllianceReward(plan: AllianceActionPlan, base: Int) {
+            if (base <= 0) return
+            val total = base * 3
+            val shares = event.betrayalWinnerId?.takeIf { event.betrayalSucceeded == true }?.let { winnerId ->
+                plan.rewardShares().keys.associateWith { playerId -> if (playerId == winnerId) 100 else 0 }
+            } ?: plan.rewardShares()
+            splitAmount(total, shares).forEach { (playerId, amount) ->
+                val player = currentPlayers.find { it.id == playerId } ?: return@forEach
+                val gain = calculateGain(player, amount, ghostPower)
+                veinChanges[playerId] = (veinChanges[playerId] ?: 0) + gain
+            }
+        }
+
+        fun applyAlliancePenalty(plan: AllianceActionPlan, base: Int) {
+            if (base <= 0) return
+            val total = base * 3
+            val shares = event.betrayalWinnerId?.takeIf { event.betrayalSucceeded == true }?.let { winnerId ->
+                plan.penaltyShares().keys.associateWith { playerId -> if (playerId == winnerId) 0 else 100 }
+            } ?: plan.penaltyShares()
+            splitAmount(total, shares).forEach { (playerId, amount) ->
+                veinChanges[playerId] = (veinChanges[playerId] ?: 0) - amount
+            }
+        }
+
+        fun applyAllianceSilkBagReward(plan: AllianceActionPlan) {
+            plan.rewardShares().forEach { (playerId, share) ->
+                if (share > 0) silkBagChanges[playerId] = (silkBagChanges[playerId] ?: 0) + 1
+            }
+        }
+
+        event.allianceActionPlan?.let { plan ->
+            val targetId = event.defender.id
+            when (event.actionType) {
+                ActionType.DUEL -> {
+                    when (decision) {
+                        0 -> {
+                            applyAllianceReward(plan, baseStake)
+                            veinChanges[targetId] = (veinChanges[targetId] ?: 0) - baseStake * 3
+                        }
+                        1 -> applyAlliancePenalty(plan, baseStake)
+                        2 -> {
+                            applyAllianceReward(plan, baseStake / 2)
+                            veinChanges[targetId] = (veinChanges[targetId] ?: 0) - (baseStake / 2) * 3
+                        }
+                    }
+                }
+                ActionType.RAID -> {
+                    when (decision) {
+                        0 -> {
+                            applyAllianceReward(plan, 10)
+                            veinChanges[targetId] = (veinChanges[targetId] ?: 0) - 30
+                        }
+                        1 -> {}
+                        2 -> applyAlliancePenalty(plan, 10)
+                    }
+                }
+                ActionType.DEFEND_ARRAY -> {}
+                ActionType.EXPLORE -> {
+                    if (decision == 0) applyAllianceReward(plan, 5)
+                    if (decision == 1) applyAllianceSilkBagReward(plan)
+                }
+            }
+
+            return currentPlayers.map { player ->
+                val v = player.spiritVeins + (veinChanges[player.id] ?: 0)
+                val bags = player.silkBag + (silkBagChanges[player.id] ?: 0)
+                val finalVeins = v.coerceAtLeast(0)
+                val newStatus = if (finalVeins <= 0) PlayerStatus.ELIMINATED else player.status
+                player.copy(
+                    spiritVeins = finalVeins,
+                    status = newStatus,
+                    silkBag = bags
+                )
+            }
+        }
+
         when (event.actionType) {
             ActionType.DUEL -> {
                 when (decision) {
@@ -177,7 +279,7 @@ object GameRuleEngine {
                 }
             }
             ActionType.DEFEND_ARRAY -> {
-                // 基础防御逻辑已在 RAID 联动中结算。
+
             }
             ActionType.EXPLORE -> {
                 if (decision == 0) applyExploreReward(event.attacker.id, 5)
@@ -189,8 +291,7 @@ object GameRuleEngine {
             val v = player.spiritVeins + (veinChanges[player.id] ?: 0)
             val bags = player.silkBag + (silkBagChanges[player.id] ?: 0)
 
-            // ================= 强制规则兜底 =================
-            val finalVeins = v.coerceAtLeast(0) // 防止灵脉出现负数
+            val finalVeins = v.coerceAtLeast(0)
             val newStatus = if (finalVeins <= 0) PlayerStatus.ELIMINATED else player.status
 
             player.copy(
@@ -201,6 +302,9 @@ object GameRuleEngine {
         }
     }
 
+    /**
+     * 返回玩家的结算阵营，包含仍存活且互相绑定的盟友。
+     */
     private fun allianceSide(players: List<Player>, playerId: String): List<Player> {
         val player = players.find { it.id == playerId } ?: return emptyList()
         if (player.status == PlayerStatus.ELIMINATED) return emptyList()
@@ -217,13 +321,13 @@ object GameRuleEngine {
     }
 
     /**
-     * 辅助计算器：结算天道庇佑 (10% 加成) 与 幽魂业力的干预
+     * 对正向灵脉收益应用天道庇佑和幽魂干预。
      */
     private fun calculateGain(player: Player, base: Int, ghostPower: Int): Int {
         var gain = base.toFloat()
         if (player.hasHeavenProtection) {
-            gain *= 1.1f // 弱者加成
+            gain *= 1.1f
         }
-        return gain.toInt() + ghostPower // 叠加幽冥干预
+        return gain.toInt() + ghostPower
     }
 }

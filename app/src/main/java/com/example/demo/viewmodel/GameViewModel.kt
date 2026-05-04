@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.demo.engine.AllianceCheckResult
 import com.example.demo.engine.AllianceRuleEngine
 import com.example.demo.engine.GameRuleEngine
 import com.example.demo.model.*
@@ -19,7 +20,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * 游戏 UI 状态载体
+ * Compose 页面消费的不可变 UI 状态快照。
  */
 data class GameUiState(
     val currentScreen: Screen = Screen.HOME,
@@ -39,20 +40,30 @@ data class GameUiState(
     val isHost: Boolean = false,
     val isRefreshing: Boolean = false,
     val myPlayerName: String = "神秘玩家",
+    val isTestModeEnabled: Boolean = false,
     val submittedActions: Map<String, MsgSubmitAction> = emptyMap(),
     val isGameOver: Boolean = false,
     val canProceedToNextDay: Boolean = false,
     val hasSubmittedAction: Boolean = false,
     val pendingAllianceRequests: List<AllianceRequest> = emptyList(),
     val incomingAllianceRequest: AllianceRequest? = null,
-    val allianceNotice: String = ""
+    val allianceNotice: String = "",
+    val pendingConspiracyRequests: List<ConspiracyRequest> = emptyList(),
+    val incomingConspiracyRequest: ConspiracyRequest? = null,
+    val conspiracySessions: List<ConspiracySession> = emptyList(),
+    val conspiracyNotice: String = "",
+    val allianceActionPlans: List<AllianceActionPlan> = emptyList(),
+    val debugNextDayNumber: Int? = null,
+    val debugNextDaySpiritVeins: Map<String, Int> = emptyMap()
 )
 
+/**
+ * 由 GameUiState 驱动的导航目的地。
+ */
 enum class Screen { HOME, PHASE1, PHASE2, WAITING_ROOM }
 
 /**
- * 游戏业务视图模型
- * 职责：负责网络通信调度、界面路由切换及 UI 状态同步
+ * 统筹房间发现、Socket 消息、游戏流程和 UI 状态更新。
  */
 class GameViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -61,6 +72,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     private val sharedPreferences = application.getSharedPreferences("GamePrefs", Context.MODE_PRIVATE)
     private val KEY_PLAYER_NAME = "saved_player_name"
+    private val KEY_TEST_MODE = "test_mode_enabled"
 
     private val nsdHelper = GameNsdHelper(application)
     private var gameServer: GameServer? = null
@@ -74,13 +86,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private var joinedRoomPort: Int = 9999
     private var settlementJob: Job? = null
     private var reconnectJob: Job? = null
+    private val isConspiracyOpen: Boolean
+        get() = _uiState.value.dayNumber > 3
+    private val isAllianceOpen: Boolean
+        get() = _uiState.value.dayNumber > 5
 
     init {
-        // 加载持久化的昵称
-        val savedName = sharedPreferences.getString(KEY_PLAYER_NAME, "神秘玩家") ?: "神秘玩家"
-        _uiState.update { it.copy(myPlayerName = savedName) }
 
-        // 监听局域网房间扫描
+        val savedName = sharedPreferences.getString(KEY_PLAYER_NAME, "神秘玩家") ?: "神秘玩家"
+        val savedTestMode = sharedPreferences.getBoolean(KEY_TEST_MODE, false)
+        _uiState.update { it.copy(myPlayerName = savedName, isTestModeEnabled = savedTestMode) }
+
         viewModelScope.launch {
             nsdHelper.discoveredRooms.collect { discoveredMap ->
                 val realRooms = discoveredMap.values.map { nsdRoom ->
@@ -100,13 +116,25 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         nsdHelper.startScanning()
     }
 
-    // ================= 基础配置与导航 =================
-
+    /**
+     * 持久化本机显示名称，并刷新 UI 状态。
+     */
     fun updatePlayerName(newName: String) {
         _uiState.update { it.copy(myPlayerName = newName) }
         sharedPreferences.edit().putString(KEY_PLAYER_NAME, newName).apply()
     }
 
+    /**
+     * 持久化测试模式开关，并刷新 UI 状态。
+     */
+    fun updateTestModeEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(isTestModeEnabled = enabled) }
+        sharedPreferences.edit().putBoolean(KEY_TEST_MODE, enabled).apply()
+    }
+
+    /**
+     * 重启 NSD 扫描，并短暂展示刷新状态。
+     */
     fun refreshRooms() {
         viewModelScope.launch {
             _uiState.update { it.copy(isRefreshing = true) }
@@ -117,8 +145,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ================= 核心联机逻辑 (房主 & 客机) =================
-
+    /**
+     * App 回到前台时恢复房主或客机的网络工作。
+     */
     fun onAppForegrounded() {
         val state = _uiState.value
         if (state.isHost && state.currentScreen != Screen.HOME) {
@@ -131,14 +160,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 创建房主房间，启动 TCP 服务端，并通过 NSD 广播。
+     */
     fun createRoom(roomName: String) {
         myPlayerId = "host_${System.currentTimeMillis()}"
         val globalName = _uiState.value.myPlayerName
         val host = Player(id = myPlayerId, name = globalName, isHost = true, isSelf = true)
+        val testBots = if (_uiState.value.isTestModeEnabled) createTestBots() else emptyList()
 
         joinedRoomIp = null
         reconnectJob?.cancel()
-        _uiState.update { it.copy(isHost = true, players = listOf(host)) }
+        _uiState.update { it.copy(isHost = true, players = listOf(host) + testBots) }
 
         gameServer = GameServer(onMessageReceived = { msg -> handleNetworkMessage(msg) })
         ensureHostServerRunning()
@@ -148,6 +181,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(currentScreen = Screen.WAITING_ROOM) }
     }
 
+    private fun createTestBots(): List<Player> {
+        return listOf(
+            Player(id = "bot_training_duel", name = "测试傀儡甲", isBot = true, spiritVeins = 120),
+            Player(id = "bot_training_raid", name = "测试傀儡乙", isBot = true, spiritVeins = 90)
+        )
+    }
+
+    /**
+     * 连接已发现的房主房间，并发送加入请求。
+     */
     fun joinRoom(room: GameRoom) {
         myPlayerId = "player_${System.currentTimeMillis()}"
         joinedRoomIp = room.ip
@@ -167,13 +210,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 从等待房间开始第 1 天，并广播初始权威状态。
+     */
     fun startGame() {
-        // 【新增】：第一天开局时，立刻计算初始的天道庇佑
+
         val updatedPlayers = GameRuleEngine.assignHeavenProtection(_uiState.value.players)
         _uiState.update { it.copy(players = updatedPlayers) }
 
         val msg = "—— 第 1 天 · 气机复苏 ——"
-        val startMsg = MsgGameStart(GamePhase.PHASE_1, msg)
+        val startMsg = MsgGameStart(GamePhase.PHASE_1, msg, 1)
 
         handleNetworkMessage(startMsg)
         viewModelScope.launch {
@@ -182,6 +228,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 断开当前房间连接，并回到房间发现。
+     */
     fun leaveRoom() {
         reconnectJob?.cancel()
         reconnectJob = null
@@ -193,8 +242,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(currentScreen = Screen.HOME, isHost = false, players = emptyList()) }
     }
 
-    // ================= 第一阶段：暗流涌动 (指令提交) =================
-
+    /**
+     * 向房主提交当前玩家的一阶段行动。
+     */
     fun submitAction(targetPlayer: Player, actionType: ActionType, stake: Int = 0) {
         if (AllianceRuleEngine.areAllied(_uiState.value.players, myPlayerId, targetPlayer.id) &&
             (actionType == ActionType.DUEL || actionType == ActionType.RAID)
@@ -210,18 +260,95 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             stake = stake
         )
 
-        // 【修复 1】：点击瞬间，立刻让 UI 呈现 "法旨已结印"，不让玩家等
         _uiState.update { it.copy(hasSubmittedAction = true) }
 
-        // 发送给服务器去慢慢处理
         if (_uiState.value.isHost) {
             handleNetworkMessage(msg)
         } else {
-            sendToServer(msg) // 使用无阻塞发包
+            sendToServer(msg)
         }
     }
 
+    /**
+     * 请求与另一名玩家建立密谋私聊。
+     */
+    fun requestConspiracy(targetPlayer: Player) {
+        val self = _uiState.value.players.find { it.id == myPlayerId } ?: return
+        val msg = MsgConspiracyRequest(
+            requestId = "conspiracy_${System.currentTimeMillis()}_$myPlayerId",
+            fromPlayerId = myPlayerId,
+            fromPlayerName = self.name,
+            toPlayerId = targetPlayer.id
+        )
+
+        _uiState.update { it.copy(conspiracyNotice = "密谋邀请已送出") }
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    /**
+     * 回应收到的密谋邀请。
+     */
+    fun respondConspiracy(request: ConspiracyRequest, accepted: Boolean) {
+        val msg = MsgConspiracyResponse(
+            requestId = request.requestId,
+            fromPlayerId = request.fromPlayerId,
+            toPlayerId = request.toPlayerId,
+            accepted = accepted
+        )
+
+        _uiState.update { it.copy(incomingConspiracyRequest = null) }
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    /**
+     * 在已有密谋会话中发送消息。
+     */
+    fun sendConspiracyChat(sessionId: String, content: String) {
+        val trimmedContent = content.trim()
+        if (trimmedContent.isEmpty()) return
+
+        val state = _uiState.value
+        val session = state.conspiracySessions.find { it.sessionId == sessionId && it.includes(myPlayerId) }
+        if (session == null) {
+            _uiState.update { it.copy(conspiracyNotice = "密谋会话不存在") }
+            return
+        }
+        val self = state.players.find { it.id == myPlayerId } ?: return
+        val recipientId = session.partnerIdFor(myPlayerId) ?: return
+
+        val msg = MsgChat(
+            senderId = myPlayerId,
+            senderName = self.name,
+            content = trimmedContent,
+            isAllianceChat = false,
+            recipientPlayerId = recipientId,
+            isConspiracyChat = true,
+            conspiracySessionId = session.sessionId
+        )
+
+        if (state.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    /**
+     * 请求与另一名存活玩家建立临时同盟。
+     */
     fun requestAlliance(targetPlayer: Player) {
+        if (!isAllianceOpen) {
+            _uiState.update { it.copy(allianceNotice = "完成第 5 回合后开放同盟") }
+            return
+        }
         val self = _uiState.value.players.find { it.id == myPlayerId } ?: return
         val msg = MsgAllianceRequest(
             requestId = "alliance_${System.currentTimeMillis()}_$myPlayerId",
@@ -238,6 +365,81 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 为当前同盟双方提出共享的一阶段行动方案。
+     */
+    fun proposeAllianceActionPlan(
+        targetPlayer: Player,
+        actionType: ActionType,
+        stake: Int,
+        rewardShareSelf: Int,
+        penaltyShareSelf: Int
+    ) {
+        val state = _uiState.value
+        val self = state.players.find { it.id == myPlayerId } ?: return
+        val partnerId = self.alliancePartnerId
+        val partner = state.players.find { it.id == partnerId }
+        if (partnerId == null) {
+            _uiState.update { it.copy(allianceNotice = "结盟后才能协定同盟行动") }
+            return
+        }
+        if (targetPlayer.id == partnerId || targetPlayer.id == myPlayerId) {
+            _uiState.update { it.copy(allianceNotice = "同盟行动需要选择第三方目标") }
+            return
+        }
+
+        val firstId = self.id
+        val secondId = partnerId
+        val plan = AllianceActionPlan(
+            allianceId = "alliance_action_${state.dayNumber}_${listOf(firstId, secondId).sorted().joinToString("_")}",
+            firstPlayerId = firstId,
+            secondPlayerId = secondId,
+            actionType = actionType,
+            targetId = targetPlayer.id,
+            targetName = targetPlayer.name,
+            stake = stake,
+            rewardShareFirst = rewardShareSelf.coerceIn(0, 100),
+            rewardShareSecond = 100 - rewardShareSelf.coerceIn(0, 100),
+            penaltyShareFirst = penaltyShareSelf.coerceIn(0, 100),
+            penaltyShareSecond = 100 - penaltyShareSelf.coerceIn(0, 100),
+            confirmedPlayerIds = listOf(myPlayerId)
+        )
+        val planForDispatch = if (partner?.isBot == true) {
+            plan.copy(confirmedPlayerIds = listOf(myPlayerId, partnerId))
+        } else {
+            plan
+        }
+        val msg = MsgAllianceActionPlanUpdate(planForDispatch, "同盟行动方案已提交，等待盟友确认")
+
+        _uiState.update { it.copy(allianceNotice = msg.notice) }
+        if (state.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    /**
+     * 确认当前同盟行动方案。
+     */
+    fun confirmAllianceActionPlan(plan: AllianceActionPlan) {
+        val confirmed = if (plan.confirmedPlayerIds.contains(myPlayerId)) {
+            plan
+        } else {
+            plan.copy(confirmedPlayerIds = plan.confirmedPlayerIds + myPlayerId)
+        }
+        val msg = MsgAllianceActionPlanUpdate(confirmed, "同盟行动已确认")
+
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    /**
+     * 回应收到的结盟邀请。
+     */
     fun respondAlliance(request: AllianceRequest, accepted: Boolean) {
         val msg = MsgAllianceResponse(
             requestId = request.requestId,
@@ -254,6 +456,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 向当前盟友发送同盟私聊消息。
+     */
     fun sendAllianceChat(content: String) {
         val trimmedContent = content.trim()
         if (trimmedContent.isEmpty()) return
@@ -280,14 +485,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ================= 第二阶段：因果结算 (判定与投票) =================
-
+    /**
+     * 锁定房主对当前二阶段事件的判定。
+     */
     fun submitHostDecisionIndex(index: Int) {
         val state = _uiState.value
         val currentEvent = state.currentEvent ?: return
-        val updatedEvent = currentEvent.copy(hostDecisionIndex = index, confirmCount = 1)
+        val requiredConfirmCount = state.players.count { it.status != PlayerStatus.ELIMINATED && !it.isBot }
+        val shouldAutoConfirm = requiredConfirmCount <= 1
+        val updatedEvent = currentEvent.copy(
+            hostDecisionIndex = index,
+            confirmCount = if (shouldAutoConfirm) 0 else 1
+        )
 
-        // 【核心修复 2】：使用新助手同时更新单独事件和队列列表
         updateCurrentEventLocally(updatedEvent)
 
         viewModelScope.launch {
@@ -295,12 +505,56 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 MsgEventSync(state.currentEventIndex, updatedEvent, state.systemBroadcast)
             )
         }
+
+        if (shouldAutoConfirm) {
+            handleNetworkMessage(MsgVote(playerId = myPlayerId, isConfirm = true))
+        }
+    }
+
+    /**
+     * 声明当前同盟结算事件中的反水意图。
+     */
+    fun declareAllianceBetrayal(eventId: String) {
+        val msg = MsgAllianceBetrayal(eventId, myPlayerId)
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    /**
+     * 由房主提交同盟反水的线下判定结果。
+     */
+    fun submitAllianceBetrayalResult(eventId: String, betrayerId: String, betrayalSucceeded: Boolean) {
+        val state = _uiState.value
+        val event = state.eventQueue.find { it.id == eventId } ?: return
+        val partnerId = event.allianceActionPlan
+            ?.let { plan -> if (plan.firstPlayerId == betrayerId) plan.secondPlayerId else plan.firstPlayerId }
+            ?: return
+        val winnerId = if (betrayalSucceeded) betrayerId else partnerId
+        val msg = MsgAllianceBetrayalResult(
+            eventId = eventId,
+            betrayerId = betrayerId,
+            winnerId = winnerId,
+            succeeded = betrayalSucceeded,
+            notice = if (betrayalSucceeded) "反水成功，结算归属已改写" else "反水失败，维持原同盟结算"
+        )
+
+        if (state.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
     }
 
     fun castVote(isConfirm: Boolean) {
         sendToServer(MsgVote(playerId = myPlayerId, isConfirm = isConfirm))
     }
 
+    /**
+     * 淘汰玩家对当前事件提交幽魂干预。
+     */
     fun submitGhostInterference(isBlessing: Boolean) {
         viewModelScope.launch {
             val msg = MsgGhostInterference(ghostId = myPlayerId, isBlessing = isBlessing, power = 5)
@@ -309,18 +563,60 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ================= 手动跳转方法 =================
+    /**
+     * 在房主结算冷却结束后推进到下一天。
+     */
     fun proceedToNextDay() {
         val state = _uiState.value
-        // 增加 !state.isGameOver 判断，确保死局无法强行开启第二天
+
         if (state.isHost && state.canProceedToNextDay && !state.isGameOver) {
             settlementJob?.cancel()
             startNextDay()
         }
     }
 
-    // ================= 异常补救：时光回溯 =================
+    /**
+     * 设置测试模式下下一天的天数。
+     */
+    fun setDebugNextDayNumber(dayNumber: Int?) {
+        if (!_uiState.value.isHost || _uiState.value.currentPhase != GamePhase.PHASE_1) return
+        _uiState.update { state ->
+            state.copy(debugNextDayNumber = dayNumber?.coerceAtLeast(state.dayNumber + 1))
+        }
+    }
 
+    /**
+     * 设置测试模式下指定玩家下一天的灵脉。
+     */
+    fun setDebugNextDaySpiritVeins(playerId: String, spiritVeins: Int?) {
+        if (!_uiState.value.isHost || _uiState.value.currentPhase != GamePhase.PHASE_1) return
+        _uiState.update { state ->
+            val nextValues = state.debugNextDaySpiritVeins.toMutableMap()
+            if (spiritVeins == null) {
+                nextValues.remove(playerId)
+            } else {
+                nextValues[playerId] = spiritVeins.coerceAtLeast(0)
+            }
+            state.copy(debugNextDaySpiritVeins = nextValues)
+        }
+    }
+
+    /**
+     * 清空测试模式下的下一天调试配置。
+     */
+    fun clearDebugNextDaySettings() {
+        if (!_uiState.value.isHost) return
+        _uiState.update {
+            it.copy(
+                debugNextDayNumber = null,
+                debugNextDaySpiritVeins = emptyMap()
+            )
+        }
+    }
+
+    /**
+     * 重新开启当天一阶段，并清空临时社交和行动状态。
+     */
     fun restartPhase1() {
         if (!_uiState.value.isHost) return
         val msg = "【天机重塑】房主开启了时光回溯，请重新下达法旨！"
@@ -333,42 +629,49 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             pendingAllianceRequests = emptyList(),
             incomingAllianceRequest = null,
             allianceNotice = "",
-            chatMessages = it.chatMessages.filterNot { message -> message.isAllianceChat },
+            pendingConspiracyRequests = emptyList(),
+            incomingConspiracyRequest = null,
+            conspiracySessions = emptyList(),
+            conspiracyNotice = "",
+            allianceActionPlans = emptyList(),
+            chatMessages = it.chatMessages.filterNot { message -> message.isAllianceChat || message.isConspiracyChat },
             systemBroadcast = msg
         ) }
 
-        // ✨ 弃用新增协议，直接复用已有的“游戏开始”协议，100%保证客机能收到！
         broadcastToAll(
             MsgRoomStateSync(cleanPlayers, msg, emptyList()),
-            MsgGameStart(GamePhase.PHASE_1, msg)
+            MsgGameStart(GamePhase.PHASE_1, msg, currentState.dayNumber)
         )
     }
 
+    /**
+     * 重置当前二阶段事件，但保留完整事件队列。
+     */
     fun restartCurrentEvent() {
         if (!_uiState.value.isHost) return
         val state = _uiState.value
         val currentEvent = state.currentEvent ?: return
 
-        // 1. 安全重置：
-        // 【关键逻辑】如果是系统强制判定的事件（如奇袭撞阵），绝对不能清空 DecisionIndex，否则会失去执行选项！
         val safeDecisionIndex = if (currentEvent.isSystemDetermined) currentEvent.hostDecisionIndex else null
 
         val resetEvent = currentEvent.copy(
             hostDecisionIndex = safeDecisionIndex,
-            confirmCount = 0 // 核心：清空确认票数
+            confirmCount = 0,
+            betrayerId = null,
+            betrayalWinnerId = null,
+            betrayalSucceeded = null
         )
 
         val alertMsg = "【天机重塑】房主推翻了当前判定，重新审理！"
 
-        // 2. 更新房主本地队列
         updateCurrentEventLocally(resetEvent, alertMsg)
 
-        // 3. ✨ 弃用新增协议，直接复用最成熟的 MsgEventSync 下发重置后的事件，绝不丢包！
         broadcastToAll(MsgEventSync(state.currentEventIndex, resetEvent, alertMsg))
     }
 
-    // ================= 网络消息中枢 =================
-
+    /**
+     * 本地与远端协议消息的统一分发入口。
+     */
     private fun handleNetworkMessage(message: NetworkMessage) {
         when (message) {
             is MsgRoomStateSync -> {
@@ -376,13 +679,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { it.copy(
                     players = localPlayers,
                     systemBroadcast = message.systemBroadcast,
-                    // 【核心修复 3】：客机接收房主的完整卷轴
+
                     eventQueue = if (message.eventQueue.isNotEmpty()) message.eventQueue else it.eventQueue
                 ) }
             }
 
             is MsgEventSync -> {
-                // 【核心修复 4】：客机收到单个事件进度时，也要更新自己的本地卷轴
+
                 _uiState.update { state ->
                     val newQueue = state.eventQueue.toMutableList()
                     if (message.currentEventIndex in newQueue.indices) {
@@ -393,7 +696,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         currentPhase = GamePhase.PHASE_2,
                         currentEventIndex = message.currentEventIndex,
                         currentEvent = message.event,
-                        eventQueue = newQueue, // 同步更新列表
+                        eventQueue = newQueue,
                         systemBroadcast = message.systemBroadcast
                     )
                 }
@@ -405,6 +708,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     state.copy(
                         currentPhase = message.initialPhase,
                         currentScreen = Screen.PHASE1,
+                        dayNumber = message.dayNumber,
                         players = cleanPlayers,
                         selectedTargetPlayer = cleanPlayers.firstOrNull { it.id != myPlayerId },
                         hasSubmittedAction = false,
@@ -412,7 +716,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         pendingAllianceRequests = emptyList(),
                         incomingAllianceRequest = null,
                         allianceNotice = "",
-                        chatMessages = state.chatMessages.filterNot { it.isAllianceChat },
+                        pendingConspiracyRequests = emptyList(),
+                        incomingConspiracyRequest = null,
+                        conspiracySessions = emptyList(),
+                        conspiracyNotice = "",
+                        allianceActionPlans = emptyList(),
+                        chatMessages = state.chatMessages.filterNot { it.isAllianceChat || it.isConspiracyChat },
                         systemBroadcast = message.systemBroadcast
                     )
                 }
@@ -437,39 +746,46 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
                     var msgsToBroadcast: List<NetworkMessage>? = null
 
-                    // 1. 将提交记录和人数比对完全放入原子级的 update 中，防止并发漏判
                     _uiState.update { state ->
                         val newActions = state.submittedActions.toMutableMap()
                         newActions[message.attackerId] = message
 
-                        val alivePlayers = state.players.filter { it.status != PlayerStatus.ELIMINATED }
+                        val alivePlayers = state.players.filter { it.status != PlayerStatus.ELIMINATED && !it.isBot }
                         val submittedAliveIds = newActions.keys.filter { id -> alivePlayers.any { it.id == id } }
 
                         if (submittedAliveIds.size >= alivePlayers.size && state.currentPhase == GamePhase.PHASE_1) {
-                            // 全员提交完毕，立即生成队列
-                            val newEventQueue = GameRuleEngine.buildEventQueue(state.players, newActions, state.dayNumber)
+
+                            val newEventQueue = GameRuleEngine.buildEventQueue(
+                                state.players,
+                                newActions,
+                                state.dayNumber,
+                                state.allianceActionPlans
+                            )
                             val broadcastMsg = "【天机观测】气运已定，按灵脉鼎盛排序开庭！"
+                            val firstEvent = newEventQueue.firstOrNull()
+                            if (firstEvent == null) {
+                                state.copy(submittedActions = emptyMap())
+                            } else {
+                                msgsToBroadcast = listOf(
+                                    MsgRoomStateSync(state.players, broadcastMsg, newEventQueue),
+                                    MsgEventSync(0, firstEvent, broadcastMsg)
+                                )
 
-                            msgsToBroadcast = listOf(
-                                MsgRoomStateSync(state.players, broadcastMsg, newEventQueue),
-                                MsgEventSync(0, newEventQueue.first(), broadcastMsg)
-                            )
-
-                            state.copy(
-                                submittedActions = emptyMap(),
-                                eventQueue = newEventQueue,
-                                currentScreen = Screen.PHASE2,
-                                currentPhase = GamePhase.PHASE_2,
-                                currentEventIndex = 0,
-                                currentEvent = newEventQueue.firstOrNull(),
-                                systemBroadcast = broadcastMsg
-                            )
+                                state.copy(
+                                    submittedActions = emptyMap(),
+                                    eventQueue = newEventQueue,
+                                    currentScreen = Screen.PHASE2,
+                                    currentPhase = GamePhase.PHASE_2,
+                                    currentEventIndex = 0,
+                                    currentEvent = firstEvent,
+                                    systemBroadcast = broadcastMsg
+                                )
+                            }
                         } else {
                             state.copy(submittedActions = newActions)
                         }
                     }
 
-                    // 2. 在安全域外执行广播，实现立即跳转
                     msgsToBroadcast?.let { msgs ->
                         broadcastToAll(*msgs.toTypedArray())
                     }
@@ -477,7 +793,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             is MsgChat -> {
-                if (message.isAllianceChat && message.recipientPlayerId == null) return
+                if ((message.isAllianceChat || message.isConspiracyChat) && message.recipientPlayerId == null) return
 
                 if (_uiState.value.isHost) {
                     if (message.isAllianceChat) {
@@ -497,6 +813,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                             return
                         }
                     }
+                    if (message.isConspiracyChat) {
+                        val sessionId = message.conspiracySessionId ?: return
+                        val recipientId = message.recipientPlayerId ?: return
+                        val canSend = _uiState.value.conspiracySessions.any { session ->
+                            session.sessionId == sessionId &&
+                                session.includes(message.senderId) &&
+                                session.includes(recipientId)
+                        }
+                        if (!canSend) return
+                    }
 
                     appendChatMessageIfVisible(message)
                     sendChatToRecipients(message)
@@ -505,15 +831,135 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            is MsgConspiracyRequest -> {
+                if (_uiState.value.isHost) {
+                    val state = _uiState.value
+                    val fromPlayer = state.players.find { it.id == message.fromPlayerId }
+                    val toPlayer = state.players.find { it.id == message.toPlayerId }
+                    val reason = when {
+                        !isConspiracyOpen -> "完成第 3 回合后开放密谋"
+                        fromPlayer == null || toPlayer == null -> "密谋对象不存在"
+                        fromPlayer.status == PlayerStatus.ELIMINATED || toPlayer.status == PlayerStatus.ELIMINATED -> "阵亡玩家无法密谋"
+                        message.fromPlayerId == message.toPlayerId -> "不能与自己密谋"
+                        else -> ""
+                    }
+                    if (reason.isNotBlank()) {
+                        broadcastToAll(MsgConspiracyResult(recipientPlayerId = message.fromPlayerId, notice = reason))
+                        if (message.fromPlayerId == myPlayerId) {
+                            _uiState.update { it.copy(conspiracyNotice = reason) }
+                        }
+                    } else {
+                        val request = ConspiracyRequest(
+                            requestId = message.requestId,
+                            fromPlayerId = message.fromPlayerId,
+                            fromPlayerName = message.fromPlayerName,
+                            toPlayerId = message.toPlayerId,
+                            expireTime = System.currentTimeMillis() + 10000
+                        )
+                        _uiState.update {
+                            it.copy(
+                                pendingConspiracyRequests = it.pendingConspiracyRequests + request,
+                                incomingConspiracyRequest = if (request.toPlayerId == myPlayerId) request else it.incomingConspiracyRequest
+                            )
+                        }
+                        broadcastToAll(
+                            MsgConspiracyResult(
+                                pendingRequest = request,
+                                recipientPlayerId = request.toPlayerId,
+                                notice = "${request.fromPlayerName} 向你发起密谋"
+                            )
+                        )
+                    }
+                }
+            }
+
+            is MsgConspiracyResponse -> {
+                if (_uiState.value.isHost) {
+                    val state = _uiState.value
+                    val request = state.pendingConspiracyRequests.find { it.requestId == message.requestId }
+                    if (request == null) {
+                        broadcastToAll(MsgConspiracyResult(recipientPlayerId = message.toPlayerId, notice = "密谋邀请已失效"))
+                        return
+                    }
+
+                    val remainingRequests = state.pendingConspiracyRequests.filterNot { it.requestId == message.requestId }
+                    if (!message.accepted) {
+                        _uiState.update {
+                            it.copy(
+                                pendingConspiracyRequests = remainingRequests,
+                                incomingConspiracyRequest = if (it.incomingConspiracyRequest?.requestId == message.requestId) null else it.incomingConspiracyRequest,
+                                conspiracyNotice = if (myPlayerId == message.toPlayerId) "已拒绝密谋邀请" else it.conspiracyNotice
+                            )
+                        }
+                        broadcastToAll(
+                            MsgConspiracyResult(recipientPlayerId = message.fromPlayerId, notice = "对方拒绝了密谋邀请"),
+                            MsgConspiracyResult(recipientPlayerId = message.toPlayerId, notice = "已拒绝密谋邀请")
+                        )
+                    } else {
+                        val fromPlayer = state.players.find { it.id == message.fromPlayerId } ?: return
+                        val toPlayer = state.players.find { it.id == message.toPlayerId } ?: return
+                        val session = ConspiracySession(
+                            sessionId = "conspiracy_session_${state.dayNumber}_${message.fromPlayerId}_${message.toPlayerId}_${System.currentTimeMillis()}",
+                            firstPlayerId = message.fromPlayerId,
+                            firstPlayerName = fromPlayer.name,
+                            secondPlayerId = message.toPlayerId,
+                            secondPlayerName = toPlayer.name,
+                            dayNumber = state.dayNumber
+                        )
+                        _uiState.update {
+                            it.copy(
+                                pendingConspiracyRequests = remainingRequests,
+                                incomingConspiracyRequest = null,
+                                conspiracySessions = it.conspiracySessions + session,
+                                conspiracyNotice = if (session.includes(myPlayerId)) "密谋已建立" else it.conspiracyNotice
+                            )
+                        }
+                        broadcastToAll(
+                            MsgConspiracyResult(
+                                session = session,
+                                recipientPlayerId = message.fromPlayerId,
+                                notice = "你已与 ${toPlayer.name} 开启密谋"
+                            ),
+                            MsgConspiracyResult(
+                                session = session,
+                                recipientPlayerId = message.toPlayerId,
+                                notice = "你已与 ${fromPlayer.name} 开启密谋"
+                            )
+                        )
+                    }
+                }
+            }
+
+            is MsgConspiracyResult -> {
+                if (message.recipientPlayerId == null || message.recipientPlayerId == myPlayerId) {
+                    _uiState.update { state ->
+                        val sessions = if (message.session != null && state.conspiracySessions.none { it.sessionId == message.session.sessionId }) {
+                            state.conspiracySessions + message.session
+                        } else {
+                            state.conspiracySessions
+                        }
+                        state.copy(
+                            incomingConspiracyRequest = message.pendingRequest ?: state.incomingConspiracyRequest,
+                            conspiracySessions = sessions,
+                            conspiracyNotice = message.notice.ifBlank { state.conspiracyNotice }
+                        )
+                    }
+                }
+            }
+
             is MsgAllianceRequest -> {
                 if (_uiState.value.isHost) {
                     val state = _uiState.value
-                    val check = AllianceRuleEngine.canRequestAlliance(
-                        players = state.players,
-                        fromPlayerId = message.fromPlayerId,
-                        toPlayerId = message.toPlayerId,
-                        pendingRequests = state.pendingAllianceRequests
-                    )
+                    val check = if (!isAllianceOpen) {
+                        AllianceCheckResult(false, "完成第 5 回合后开放同盟")
+                    } else {
+                        AllianceRuleEngine.canRequestAlliance(
+                            players = state.players,
+                            fromPlayerId = message.fromPlayerId,
+                            toPlayerId = message.toPlayerId,
+                            pendingRequests = state.pendingAllianceRequests
+                        )
+                    }
 
                     if (!check.allowed) {
                         broadcastToAll(
@@ -527,6 +973,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                             _uiState.update { it.copy(allianceNotice = check.reason) }
                         }
                     } else {
+                        val targetPlayer = state.players.find { it.id == message.toPlayerId }
+                        if (targetPlayer?.isBot == true) {
+                            handleNetworkMessage(
+                                MsgAllianceResponse(
+                                    requestId = message.requestId,
+                                    fromPlayerId = message.fromPlayerId,
+                                    toPlayerId = message.toPlayerId,
+                                    accepted = true
+                                )
+                            )
+                            return
+                        }
                         val request = AllianceRequest(
                             requestId = message.requestId,
                             fromPlayerId = message.fromPlayerId,
@@ -681,6 +1139,107 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            is MsgAllianceActionPlanUpdate -> {
+                if (_uiState.value.isHost) {
+                    val state = _uiState.value
+                    val plan = message.plan
+                    val first = state.players.find { it.id == plan.firstPlayerId }
+                    val second = state.players.find { it.id == plan.secondPlayerId }
+                    val allowed = first?.alliancePartnerId == second?.id && second?.alliancePartnerId == first?.id
+                    if (!allowed) {
+                        broadcastToAll(MsgAllianceResult(state.players, recipientPlayerId = plan.firstPlayerId, notice = "同盟已失效"))
+                        return
+                    }
+                    val updatedPlans = (state.allianceActionPlans.filterNot { it.allianceId == plan.allianceId } + plan)
+                    _uiState.update {
+                        it.copy(
+                            allianceActionPlans = updatedPlans,
+                            hasSubmittedAction = if (plan.isFullyConfirmed() && plan.includes(myPlayerId)) true else it.hasSubmittedAction,
+                            allianceNotice = if (plan.includes(myPlayerId)) message.notice else it.allianceNotice
+                        )
+                    }
+                    val notice = if (plan.isFullyConfirmed()) {
+                        "同盟行动已协定，等待全员行动提交"
+                    } else {
+                        message.notice
+                    }
+                    if (plan.isFullyConfirmed()) {
+                        handleNetworkMessage(
+                            MsgSubmitAction(
+                                attackerId = plan.firstPlayerId,
+                                targetId = plan.targetId,
+                                actionType = plan.actionType,
+                                stake = plan.stake
+                            )
+                        )
+                        handleNetworkMessage(
+                            MsgSubmitAction(
+                                attackerId = plan.secondPlayerId,
+                                targetId = plan.targetId,
+                                actionType = plan.actionType,
+                                stake = plan.stake
+                            )
+                        )
+                    }
+                    viewModelScope.launch(Dispatchers.IO) {
+                        gameServer?.sendToPlayers(setOf(plan.firstPlayerId, plan.secondPlayerId), MsgAllianceActionPlanUpdate(plan, notice))
+                    }
+                    broadcastToAll(
+                        MsgAllianceResult(state.players, recipientPlayerId = plan.firstPlayerId, notice = notice),
+                        MsgAllianceResult(state.players, recipientPlayerId = plan.secondPlayerId, notice = notice)
+                    )
+                } else {
+                    _uiState.update { state ->
+                        val updatedPlans = (state.allianceActionPlans.filterNot { it.allianceId == message.plan.allianceId } + message.plan)
+                        state.copy(
+                            allianceActionPlans = updatedPlans,
+                            hasSubmittedAction = if (message.plan.isFullyConfirmed() && message.plan.includes(myPlayerId)) true else state.hasSubmittedAction,
+                            allianceNotice = message.notice.ifBlank { state.allianceNotice }
+                        )
+                    }
+                }
+            }
+
+            is MsgAllianceBetrayal -> {
+                if (_uiState.value.isHost) {
+                    val state = _uiState.value
+                    val event = state.eventQueue.find { it.id == message.eventId } ?: return
+                    if (!event.isAllianceAction || event.allianceActionPlan?.includes(message.playerId) != true) return
+                    val updatedEvent = event.copy(betrayerId = message.playerId)
+                    val newQueue = state.eventQueue.map { if (it.id == message.eventId) updatedEvent else it }
+                    val broadcast = "【反水】${state.players.find { it.id == message.playerId }?.name ?: "盟友"} 选择反水，等待房主录入判定"
+                    _uiState.update {
+                        it.copy(
+                            eventQueue = newQueue,
+                            currentEvent = if (it.currentEvent?.id == message.eventId) updatedEvent else it.currentEvent,
+                            systemBroadcast = broadcast
+                        )
+                    }
+                    broadcastToAll(MsgEventSync(state.currentEventIndex, updatedEvent, broadcast))
+                }
+            }
+
+            is MsgAllianceBetrayalResult -> {
+                if (_uiState.value.isHost) {
+                    val state = _uiState.value
+                    val event = state.eventQueue.find { it.id == message.eventId } ?: return
+                    val updatedEvent = event.copy(
+                        betrayerId = message.betrayerId,
+                        betrayalWinnerId = message.winnerId,
+                        betrayalSucceeded = message.succeeded
+                    )
+                    val newQueue = state.eventQueue.map { if (it.id == message.eventId) updatedEvent else it }
+                    _uiState.update {
+                        it.copy(
+                            eventQueue = newQueue,
+                            currentEvent = if (it.currentEvent?.id == message.eventId) updatedEvent else it.currentEvent,
+                            systemBroadcast = message.notice
+                        )
+                    }
+                    broadcastToAll(MsgEventSync(state.currentEventIndex, updatedEvent, message.notice))
+                }
+            }
+
             is MsgActionRejected -> {
                 if (message.playerId == myPlayerId) {
                     _uiState.update {
@@ -704,7 +1263,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // ================= 1. 修改 handleNetworkMessage 里的 is MsgVote 分支 =================
             is MsgVote -> {
                 if (_uiState.value.isHost) {
                     var msgsToBroadcast: List<NetworkMessage>? = null
@@ -714,9 +1272,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         val currentEvent = state.currentEvent ?: return@update state
 
                         if (message.isConfirm) {
+                            if (currentEvent.isAllianceAction &&
+                                currentEvent.betrayerId != null &&
+                                currentEvent.betrayalSucceeded == null
+                            ) {
+                                return@update state.copy(systemBroadcast = "【反水】等待房主录入反水判定")
+                            }
                             val newCount = currentEvent.confirmCount + 1
-                            if (newCount >= state.players.size) {
-                                // 票数已满：执行强结算
+                            val requiredConfirmCount = state.players.count { it.status != PlayerStatus.ELIMINATED && !it.isBot }
+                            if (newCount >= requiredConfirmCount) {
+
                                 val fullyConfirmedEvent = currentEvent.copy(confirmCount = newCount)
                                 val updatedPlayers = GameRuleEngine.resolveEventOutcome(fullyConfirmedEvent, state.players)
 
@@ -752,7 +1317,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                         )
                                         state.copy(players = updatedPlayers, systemBroadcast = resultMsg, currentEventIndex = nextIndex, currentEvent = nextEvent, eventQueue = newQueue)
                                     } else {
-                                        // 触发冷却
+
                                         triggerEndOfEra = true
                                         msgsToBroadcast = listOf(
                                             MsgRoomStateSync(updatedPlayers, resultMsg, newQueue),
@@ -762,7 +1327,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 }
                             } else {
-                                // 票数未满：安全累加票数
+
                                 val updatedEvent = currentEvent.copy(confirmCount = newCount)
                                 val newQueue = state.eventQueue.toMutableList()
                                 if (state.currentEventIndex in newQueue.indices) {
@@ -772,7 +1337,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                 state.copy(currentEvent = updatedEvent, eventQueue = newQueue)
                             }
                         } else {
-                            // 提出异议：打回重裁
+
                             val resetEvent = currentEvent.copy(hostDecisionIndex = null, confirmCount = 0)
                             val alertMsg = "【警报】有玩家对裁定提出异议！"
                             val newQueue = state.eventQueue.toMutableList()
@@ -784,7 +1349,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // 触发相关的副作用与广播
                     msgsToBroadcast?.let { msgs ->
                         broadcastToAll(*msgs.toTypedArray())
                     }
@@ -792,12 +1356,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         settlementJob?.cancel()
                         _uiState.update { it.copy(canProceedToNextDay = false) }
                         settlementJob = viewModelScope.launch {
-                            // 同步消息...
-                            kotlinx.coroutines.delay(3000) // ⏳ 关键的 3 秒等待
+
+                            kotlinx.coroutines.delay(3000)
                             val endMsg = "本纪元因果了结，准备进入下一天..."
                             _uiState.update { it.copy(
                                 systemBroadcast = endMsg,
-                                canProceedToNextDay = true // 3秒后解锁按钮
+                                canProceedToNextDay = true
                             ) }
                             val s = _uiState.value
                             broadcastToAll(
@@ -817,6 +1381,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 将新连接客机加入房主状态，并重新同步所有客户端。
+     */
     private fun handlePlayerJoin(msg: MsgJoinRoom) {
         val currentState = _uiState.value
         if (currentState.players.any { it.id == msg.playerId }) {
@@ -830,6 +1397,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         syncCurrentStateToClients(_uiState.value)
     }
 
+    /**
+     * 将房主当前权威状态发送给所有已连接客机。
+     */
     private fun syncCurrentStateToClients(state: GameUiState) {
         val messages = mutableListOf<NetworkMessage>()
         messages.add(MsgRoomStateSync(state.players, state.systemBroadcast, state.eventQueue))
@@ -837,7 +1407,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         when (state.currentPhase) {
             GamePhase.PHASE_1 -> {
                 if (state.currentScreen != Screen.WAITING_ROOM) {
-                    messages.add(MsgGameStart(GamePhase.PHASE_1, state.systemBroadcast))
+                    messages.add(MsgGameStart(GamePhase.PHASE_1, state.systemBroadcast, state.dayNumber))
                 }
             }
             GamePhase.PHASE_2 -> {
@@ -851,7 +1421,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         broadcastToAll(*messages.toTypedArray())
     }
 
+    /**
+     * 仅在消息属于当前客户端可见会话时追加聊天记录。
+     */
     private fun appendChatMessageIfVisible(message: MsgChat) {
+        if (message.isConspiracyChat) {
+            val recipientId = message.recipientPlayerId ?: return
+            val sessionId = message.conspiracySessionId ?: return
+            val visible = _uiState.value.conspiracySessions.any { session ->
+                session.sessionId == sessionId &&
+                    session.includes(myPlayerId) &&
+                    (message.senderId == myPlayerId || recipientId == myPlayerId)
+            }
+            if (!visible) return
+        }
         if (message.isAllianceChat) {
             val recipientId = message.recipientPlayerId ?: return
             if (message.senderId != myPlayerId && recipientId != myPlayerId) return
@@ -864,7 +1447,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             senderAvatarUrl = "",
             content = message.content,
             recipientPlayerId = message.recipientPlayerId,
-            isAllianceChat = message.isAllianceChat
+            conspiracySessionId = message.conspiracySessionId,
+            isAllianceChat = message.isAllianceChat,
+            isConspiracyChat = message.isConspiracyChat
         )
         _uiState.update { state ->
             state.copy(chatMessages = (state.chatMessages + chatMessage).takeLast(80))
@@ -873,7 +1458,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendChatToRecipients(message: MsgChat) {
         viewModelScope.launch(Dispatchers.IO) {
-            if (message.isAllianceChat) {
+            if (message.isAllianceChat || message.isConspiracyChat) {
                 val recipientId = message.recipientPlayerId ?: return@launch
                 gameServer?.sendToPlayers(setOf(message.senderId, recipientId), message)
             } else {
@@ -883,16 +1468,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 【房主专用】开启下一个轮回
+     * 基于房主状态开启下一天的一阶段。
      */
     private fun startNextDay() {
         if (!_uiState.value.isHost) return
-        val nextDay = _uiState.value.dayNumber + 1
+        val currentState = _uiState.value
+        val nextDay = currentState.debugNextDayNumber ?: currentState.dayNumber + 1
         val welcomeMsg = "—— 第 $nextDay 天 · 气机复苏 ——"
 
-        // 【核心修复】：在天亮时，立刻核算新一天的天道庇佑！
         val updatedPlayers = GameRuleEngine.assignHeavenProtection(
-            AllianceRuleEngine.clearAlliances(_uiState.value.players)
+            AllianceRuleEngine.clearAlliances(currentState.players).map { player ->
+                val debugVeins = currentState.debugNextDaySpiritVeins[player.id]
+                if (debugVeins == null) player else player.copy(spiritVeins = debugVeins)
+            }
         )
 
         _uiState.update { state ->
@@ -905,21 +1493,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 pendingAllianceRequests = emptyList(),
                 incomingAllianceRequest = null,
                 allianceNotice = "",
-                chatMessages = state.chatMessages.filterNot { it.isAllianceChat },
+                pendingConspiracyRequests = emptyList(),
+                incomingConspiracyRequest = null,
+                conspiracySessions = emptyList(),
+                conspiracyNotice = "",
+                allianceActionPlans = emptyList(),
+                chatMessages = state.chatMessages.filterNot { it.isAllianceChat || it.isConspiracyChat },
                 eventQueue = emptyList(),
                 currentEvent = null,
                 systemBroadcast = welcomeMsg,
-                players = updatedPlayers // 【更新】：将带有最新星星状态的玩家列表存入
+                debugNextDayNumber = null,
+                debugNextDaySpiritVeins = emptyMap(),
+                players = updatedPlayers
             )
         }
 
         viewModelScope.launch {
-            gameServer?.broadcast(MsgGameStart(GamePhase.PHASE_1, welcomeMsg))
+            gameServer?.broadcast(MsgGameStart(GamePhase.PHASE_1, welcomeMsg, nextDay))
             gameServer?.broadcast(MsgRoomStateSync(updatedPlayers, welcomeMsg))
         }
     }
+
     /**
-     * 【新增】：统一处理事件与队列的同步更新
+     * 同步更新 currentEvent 以及 eventQueue 中对应的事件项。
      */
     private fun updateCurrentEventLocally(updatedEvent: GameEvent, newBroadcast: String? = null) {
         _uiState.update { state ->
@@ -936,7 +1532,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 客机发送专用：切入 IO 线程，绝不卡顿点击动画
+     * 当 Android 生命周期导致监听循环停止时重启房主服务端。
      */
     private fun ensureHostServerRunning() {
         val server = gameServer ?: return
@@ -947,6 +1543,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 在没有重连任务运行时安排一次客机重连。
+     */
     private fun scheduleClientReconnect(immediate: Boolean = false) {
         if (_uiState.value.isHost || _uiState.value.currentScreen == Screen.HOME) return
         if (joinedRoomIp.isNullOrEmpty()) return
@@ -982,6 +1581,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    /**
+     * 发送客机消息；失败时重连后再重试一次。
+     */
     private fun sendToServer(msg: NetworkMessage) {
         viewModelScope.launch(Dispatchers.IO) {
             if (!gameClient.sendMessage(msg) && connectToHostAndJoin()) {
@@ -992,13 +1594,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 房主广播专用：切入 IO 线程，并在连续发包时加入 30ms 错位，彻底解决 TCP 粘包与延迟
+     * 按顺序广播多条房主消息，并在消息之间保留极短间隔。
      */
     private fun broadcastToAll(vararg msgs: NetworkMessage) {
         viewModelScope.launch(Dispatchers.IO) {
             msgs.forEach { msg ->
                 gameServer?.broadcast(msg)
-                kotlinx.coroutines.delay(10) // 微小延迟，打断网络阻塞
+                kotlinx.coroutines.delay(10)
             }
         }
     }

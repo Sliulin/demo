@@ -2,6 +2,9 @@ package com.example.demo.model
 
 import kotlinx.serialization.Serializable
 
+/**
+ * 由一阶段行动生成、在二阶段公开结算的事件。
+ */
 @Serializable
 data class GameEvent(
     val id: String,
@@ -18,11 +21,20 @@ data class GameEvent(
     val hostDecision: Boolean? = null,
     val stake: Int = 0,
     var karmicInfluence: Int = 0,
-    var hostDecisionIndex: Int? = null, // 【新增】0, 1, 2 分别对应不同的判定结果
-    var isSystemDetermined: Boolean = false, // 【新增】标记是否由系统直接判定（如奇袭被防御）
-    var systemMemo: String = ""
+    var hostDecisionIndex: Int? = null,
+    var isSystemDetermined: Boolean = false,
+    var systemMemo: String = "",
+    val isAllianceAction: Boolean = false,
+    val alliancePartner: Player? = null,
+    val allianceActionPlan: AllianceActionPlan? = null,
+    val betrayerId: String? = null,
+    val betrayalWinnerId: String? = null,
+    val betrayalSucceeded: Boolean? = null
 )
 
+/**
+ * 为兼容旧序列化数据保留的结算结果载荷。
+ */
 @Serializable
 data class EventResult(
     val winnerId: String,

@@ -18,7 +18,9 @@ import androidx.compose.ui.unit.*
 import androidx.compose.material3.Text
 import androidx.compose.ui.text.font.FontStyle
 
-// ================== 🌫 多层云雾 ==================
+/**
+ * 游戏主页面共用的动态氛围背景。
+ */
 @Composable
 fun StudioBackground() {
     val infinite = rememberInfiniteTransition()
@@ -30,18 +32,17 @@ fun StudioBackground() {
     Canvas(Modifier.fillMaxSize()) {
         drawRect(Brush.verticalGradient(listOf(Color(0xFFFDF8F2), Color(0xFFF7F1E8))))
 
-        // 远层
         drawCircle(Color.White.copy(0.03f), size.width * 0.9f, Offset(far % size.width, size.height * 0.25f))
 
-        // 中层
         drawCircle(Color.White.copy(0.04f), size.width * 0.7f, Offset(mid % size.width, size.height * 0.5f))
 
-        // 近层
         drawCircle(Color.White.copy(0.06f), size.width * 0.5f, Offset(near % size.width, size.height * 0.7f))
     }
 }
 
-// ================== 🧊 真玻璃 ==================
+/**
+ * 自定义视觉体系中的半透明玻璃容器。
+ */
 @Composable
 fun StudioGlass(
     modifier: Modifier = Modifier,
@@ -50,7 +51,7 @@ fun StudioGlass(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(24.dp))
-            .background(Color.White.copy(alpha = 0.55f)) // 👈 半透明即可
+            .background(Color.White.copy(alpha = 0.55f))
             .border(
                 width = 1.dp,
                 brush = Brush.linearGradient(
@@ -63,7 +64,6 @@ fun StudioGlass(
             )
     ) {
 
-        // ✨ 顶部高光（核心高级感）
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -82,7 +82,9 @@ fun StudioGlass(
     }
 }
 
-// ================== ✨ 呼吸光 ==================
+/**
+ * 用于交互控件背后的呼吸光效。
+ */
 @Composable
 fun StudioGlow(modifier: Modifier = Modifier) {
     val infinite = rememberInfiniteTransition()
@@ -95,8 +97,9 @@ fun StudioGlow(modifier: Modifier = Modifier) {
     )
 }
 
-// ================== 💥 点击粒子（核心）==================
-
+/**
+ * 全屏点击粒子反馈层。
+ */
 @Composable
 fun ClickParticleLayer() {
     var particles by remember { mutableStateOf(listOf<Offset>()) }
@@ -131,7 +134,10 @@ fun ClickParticleLayer() {
         }
     }
 }
-// ================== 🔘 按钮（带波纹+光）==================
+
+/**
+ * 匹配玻璃视觉风格的自定义按钮。
+ */
 @Composable
 fun StudioButton(
     text: String,
@@ -167,9 +173,12 @@ fun StudioButton(
     }
 }
 
+/**
+ * 等待其他玩家或网络状态时使用的紧凑加载卡片。
+ */
 @Composable
 fun WaitingCard(message: String) {
-    // 这是一个符合你修仙风格的等待卡片组件
+
     Box(
         modifier = Modifier
             .fillMaxWidth()

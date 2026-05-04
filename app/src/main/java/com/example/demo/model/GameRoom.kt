@@ -2,6 +2,9 @@ package com.example.demo.model
 
 import kotlinx.serialization.Serializable
 
+/**
+ * 通过局域网服务发现得到的房间摘要。
+ */
 @Serializable
 data class GameRoom(
     val id: String,

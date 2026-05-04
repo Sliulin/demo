@@ -4,7 +4,13 @@ import com.example.demo.model.AllianceRequest
 import com.example.demo.model.Player
 import com.example.demo.model.PlayerStatus
 
+/**
+ * 同盟规则的纯逻辑入口，负责校验结盟资格和转换同盟状态。
+ */
 object AllianceRuleEngine {
+    /**
+     * 校验两个玩家是否可以创建新的结盟请求。
+     */
     fun canRequestAlliance(
         players: List<Player>,
         fromPlayerId: String,
@@ -46,6 +52,9 @@ object AllianceRuleEngine {
         return AllianceCheckResult(true)
     }
 
+    /**
+     * 将两个玩家标记为互相结盟。
+     */
     fun applyAlliance(players: List<Player>, firstPlayerId: String, secondPlayerId: String): List<Player> {
         return players.map { player ->
             when (player.id) {
@@ -62,6 +71,9 @@ object AllianceRuleEngine {
         }
     }
 
+    /**
+     * 在新的一阶段开始时清空所有临时同盟状态。
+     */
     fun clearAlliances(players: List<Player>): List<Player> {
         return players.map { player ->
             if (player.status == PlayerStatus.ALLIANCED) {
@@ -72,12 +84,18 @@ object AllianceRuleEngine {
         }
     }
 
+    /**
+     * 根据当前玩家快照判断两名玩家是否互为盟友。
+     */
     fun areAllied(players: List<Player>, firstPlayerId: String, secondPlayerId: String): Boolean {
         val first = players.find { it.id == firstPlayerId } ?: return false
         return first.alliancePartnerId == secondPlayerId
     }
 }
 
+/**
+ * 结盟校验结果。
+ */
 data class AllianceCheckResult(
     val allowed: Boolean,
     val reason: String = ""

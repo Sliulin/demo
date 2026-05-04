@@ -7,10 +7,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -34,8 +36,11 @@ import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.compose.ui.text.style.TextAlign
 import com.example.demo.model.ActionType
+import com.example.demo.model.AllianceActionPlan
 import com.example.demo.model.AllianceRequest
 import com.example.demo.model.ChatMessage
+import com.example.demo.model.ConspiracyRequest
+import com.example.demo.model.ConspiracySession
 import com.example.demo.model.Player
 import com.example.demo.model.PlayerStatus
 import com.example.demo.ui.ClickParticleLayer
@@ -46,19 +51,38 @@ import com.example.demo.ui.WaitingCard
 import kotlinx.coroutines.launch
 import java.util.Locale
 
+/**
+ * 一阶段行动页，承载目标选择、行动提交、同盟、密谋和私聊。
+ */
 @Composable
 fun Phase1Screen(
     players: List<Player>,
     hasSubmittedAction: Boolean,
     incomingAllianceRequest: AllianceRequest? = null,
+    incomingConspiracyRequest: ConspiracyRequest? = null,
+    conspiracySessions: List<ConspiracySession> = emptyList(),
+    allianceActionPlans: List<AllianceActionPlan> = emptyList(),
     allianceNotice: String = "",
+    conspiracyNotice: String = "",
     chatMessages: List<ChatMessage> = emptyList(),
+    dayNumber: Int = 1,
     isHost: Boolean = false,
+    isTestModeEnabled: Boolean = false,
     submittedCount: Int = 0,
+    debugNextDayNumber: Int? = null,
+    debugNextDaySpiritVeins: Map<String, Int> = emptyMap(),
     onActionSubmit: (Player, ActionType, Int) -> Unit,
+    onConspiracyRequest: (Player) -> Unit = {},
+    onConspiracyResponse: (ConspiracyRequest, Boolean) -> Unit = { _, _ -> },
+    onConspiracyChatSend: (String, String) -> Unit = { _, _ -> },
     onAllianceRequest: (Player) -> Unit = {},
     onAllianceResponse: (AllianceRequest, Boolean) -> Unit = { _, _ -> },
+    onAllianceActionPlanPropose: (Player, ActionType, Int, Int, Int) -> Unit = { _, _, _, _, _ -> },
+    onAllianceActionPlanConfirm: (AllianceActionPlan) -> Unit = {},
     onAllianceChatSend: (String) -> Unit = {},
+    onDebugNextDayChange: (Int?) -> Unit = {},
+    onDebugSpiritVeinsChange: (String, Int?) -> Unit = { _, _ -> },
+    onClearDebugSettings: () -> Unit = {},
     onForceProceed: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -66,21 +90,28 @@ fun Phase1Screen(
         Toast.makeText(context, "劫数未尽，本尊不可强行出关！", Toast.LENGTH_SHORT).show()
     }
 
-    // 1. 定义“合法目标”列表（用于判断谁可以被攻击）
     val validTargets = remember(players) {
         players.filter { !it.isSelf && it.status != PlayerStatus.ELIMINATED }
     }
 
-    // 2. 初始选择逻辑：优先选中第一个敌人，如果没敌人（比如只有自己）才选自己
     var selectedPlayer by remember(players) {
         mutableStateOf(validTargets.firstOrNull() ?: players.first { it.isSelf })
     }
 
     var isSubmitting by remember(hasSubmittedAction) { mutableStateOf(false) }
     var isAllianceChatOpen by remember { mutableStateOf(false) }
+    var isConspiracyChatOpen by remember { mutableStateOf(false) }
+    var selectedConspiracySessionId by remember { mutableStateOf<String?>(null) }
     val selfPlayer = remember(players) { players.firstOrNull { it.isSelf } }
     val alliancePartner = remember(players, selfPlayer?.alliancePartnerId) {
         players.find { it.id == selfPlayer?.alliancePartnerId }
+    }
+    val alliancePlan = remember(allianceActionPlans, selfPlayer?.id, alliancePartner?.id) {
+        allianceActionPlans.find { plan ->
+            val selfId = selfPlayer?.id
+            val partnerId = alliancePartner?.id
+            selfId != null && partnerId != null && plan.includes(selfId) && plan.includes(partnerId)
+        }
     }
     val allianceMessages = remember(chatMessages, selfPlayer?.id, alliancePartner?.id) {
         val selfId = selfPlayer?.id
@@ -97,6 +128,11 @@ fun Phase1Screen(
             Toast.makeText(context, allianceNotice, Toast.LENGTH_SHORT).show()
         }
     }
+    LaunchedEffect(conspiracyNotice) {
+        if (conspiracyNotice.isNotBlank()) {
+            Toast.makeText(context, conspiracyNotice, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         StudioBackground()
@@ -109,6 +145,13 @@ fun Phase1Screen(
                 onReject = { onAllianceResponse(request, false) }
             )
         }
+        incomingConspiracyRequest?.let { request ->
+            ConspiracyRequestDialog(
+                request = request,
+                onAccept = { onConspiracyResponse(request, true) },
+                onReject = { onConspiracyResponse(request, false) }
+            )
+        }
 
         if (isAllianceChatOpen && selfPlayer != null && alliancePartner != null) {
             AllianceChatSheet(
@@ -119,26 +162,49 @@ fun Phase1Screen(
                 onDismiss = { isAllianceChatOpen = false }
             )
         }
+        if (isConspiracyChatOpen && selfPlayer != null) {
+            ConspiracyChatSheet(
+                selfPlayerId = selfPlayer.id,
+                sessions = conspiracySessions,
+                selectedSessionId = selectedConspiracySessionId,
+                messages = chatMessages,
+                onSessionSelect = { selectedConspiracySessionId = it },
+                onSend = onConspiracyChatSend,
+                onDismiss = { isConspiracyChatOpen = false }
+            )
+        }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
         ) {
             Spacer(modifier = Modifier.height(32.dp))
 
-            // ✨ 修改：不再需要传入倒计时和进度参数
             PhaseHeader()
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // 【核心修复 3】：只将存活的玩家传入头像选择行
+            if (isHost && isTestModeEnabled) {
+                Phase1DebugPanel(
+                    players = players,
+                    currentDay = dayNumber,
+                    pendingDayNumber = debugNextDayNumber,
+                    pendingSpiritVeins = debugNextDaySpiritVeins,
+                    onPendingDayChange = onDebugNextDayChange,
+                    onPendingSpiritVeinsChange = onDebugSpiritVeinsChange,
+                    onClear = onClearDebugSettings
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
             PlayerRingsRow(
                 players = players,
                 selectedPlayer = selectedPlayer,
                 onPlayerSelect = { player ->
-                    // 逻辑：只有点击“非本尊且存活”的玩家，才允许切换选中状态
+
                     if (!player.isSelf && player.status != PlayerStatus.ELIMINATED) {
                         selectedPlayer = player
                     } else if (player.isSelf) {
@@ -155,24 +221,78 @@ fun Phase1Screen(
                     onClick = { isAllianceChatOpen = true }
                 )
             }
+            if (conspiracySessions.isNotEmpty()) {
+                val conspiracyPartnerNames = remember(conspiracySessions, selfPlayer?.id) {
+                    val selfId = selfPlayer?.id
+                    conspiracySessions.joinToString("、") { session ->
+                        if (session.firstPlayerId == selfId) session.secondPlayerName else session.firstPlayerName
+                    }
+                }
+                val latestConspiracyMessage = remember(chatMessages, conspiracySessions) {
+                    val sessionIds = conspiracySessions.map { it.sessionId }.toSet()
+                    chatMessages
+                        .filter { it.isConspiracyChat && it.conspiracySessionId in sessionIds }
+                        .maxByOrNull { it.timestamp }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = {
+                        selectedConspiracySessionId = selectedConspiracySessionId ?: conspiracySessions.firstOrNull()?.sessionId
+                        isConspiracyChatOpen = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White.copy(alpha = 0.55f))
+                ) {
+                    Icon(Icons.Default.Markunread, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.Start
+                    ) {
+                        Text(
+                            "密谋私聊 · $conspiracyPartnerNames",
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        latestConspiracyMessage?.let { message ->
+                            Text(
+                                "${message.senderName}: ${message.content}",
+                                fontSize = 11.sp,
+                                color = Color(0xFF8B7355),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(24.dp))
 
             if (hasSubmittedAction) {
-                // ✨ 修改：传入房主参数和重置回调，以便在有人卡死时房主可以点击“时光回溯”
+
                 SubmittedOverlay(
                     isHost = isHost,
-                    onRestart = onForceProceed // 将回调传给内部的按钮
+                    onRestart = onForceProceed
                 )
             } else {
-                // 如果场上没活人了（通常终局已拦截，但这里做个兜底）
+
                 if (!selectedPlayer.isSelf) {
                     ActionPanel(
                         targetPlayer = selectedPlayer,
                         selfPlayer = selfPlayer ?: players.first { it.isSelf },
                         isSubmitting = isSubmitting,
                         isAlliedWithTarget = selfPlayer?.alliancePartnerId == selectedPlayer.id,
+                        dayNumber = dayNumber,
+                        alliancePartner = alliancePartner,
+                        alliancePlan = alliancePlan,
+                        canConspire = dayNumber > 3,
+                        canAlliance = dayNumber > 5,
+                        onConspiracyRequest = { onConspiracyRequest(selectedPlayer) },
                         onAllianceRequest = { onAllianceRequest(selectedPlayer) },
+                        onAllianceActionPlanPropose = { target, action, stake, rewardShare, penaltyShare ->
+                            onAllianceActionPlanPropose(target, action, stake, rewardShare, penaltyShare)
+                        },
+                        onAllianceActionPlanConfirm = onAllianceActionPlanConfirm,
                         onActionSubmit = { target, action, stake ->
                             isSubmitting = true
                             onActionSubmit(target, action, stake)
@@ -207,6 +327,36 @@ private fun AllianceRequestDialog(
         },
         text = {
             Text("${request.fromPlayerName} 邀请你本回合结盟")
+        },
+        confirmButton = {
+            Button(onClick = onAccept) {
+                Text("同意")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onReject) {
+                Text("拒绝")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ConspiracyRequestDialog(
+    request: ConspiracyRequest,
+    onAccept: () -> Unit,
+    onReject: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onReject,
+        icon = {
+            Icon(Icons.Default.VisibilityOff, contentDescription = null, tint = Color(0xFFC0625E))
+        },
+        title = {
+            Text("密谋邀请")
+        },
+        text = {
+            Text("${request.fromPlayerName} 邀请你开启本回合密谋")
         },
         confirmButton = {
             Button(onClick = onAccept) {
@@ -303,6 +453,110 @@ private fun AllianceChatSheet(
 }
 
 @Composable
+private fun ConspiracyChatSheet(
+    selfPlayerId: String,
+    sessions: List<ConspiracySession>,
+    selectedSessionId: String?,
+    messages: List<ChatMessage>,
+    onSessionSelect: (String) -> Unit,
+    onSend: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var draft by remember { mutableStateOf("") }
+    val selectedSession = sessions.find { it.sessionId == selectedSessionId } ?: sessions.firstOrNull()
+    val selectedMessages = remember(messages, selectedSession?.sessionId) {
+        messages.filter { it.isConspiracyChat && it.conspiracySessionId == selectedSession?.sessionId }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(Icons.Default.VisibilityOff, contentDescription = null, tint = Color(0xFFC0625E))
+        },
+        title = {
+            Text("密谋私聊")
+        },
+        text = {
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    sessions.forEach { session ->
+                        val partnerName = if (session.firstPlayerId == selfPlayerId) session.secondPlayerName else session.firstPlayerName
+                        OutlinedButton(
+                            onClick = { onSessionSelect(session.sessionId) },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (session.sessionId == selectedSession?.sessionId) {
+                                    Color(0xFFC0625E).copy(alpha = 0.12f)
+                                } else {
+                                    Color.Transparent
+                                }
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(partnerName.take(4), fontSize = 12.sp)
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF5C4033).copy(alpha = 0.06f))
+                        .padding(12.dp)
+                ) {
+                    if (selectedMessages.isEmpty()) {
+                        Text(
+                            "密谋内容仅当前双方可见，不会进入公开战报。",
+                            color = Color(0xFF8B7355),
+                            fontSize = 13.sp,
+                            modifier = Modifier.align(Alignment.Center),
+                            textAlign = TextAlign.Center
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(selectedMessages) { message ->
+                                AllianceChatBubble(
+                                    message = message,
+                                    isSelf = message.senderId == selfPlayerId
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it.take(120) },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("输入密谋内容") },
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    selectedSession?.let { onSend(it.sessionId, draft) }
+                    draft = ""
+                },
+                enabled = draft.isNotBlank() && selectedSession != null
+            ) {
+                Text("发送")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+@Composable
 private fun AllianceChatBubble(
     message: ChatMessage,
     isSelf: Boolean
@@ -366,7 +620,6 @@ private fun AllianceChatEntry(
     }
 }
 
-// ====== 【修复】：新增缺失的 PlayerRingsRow 函数 ======
 @Composable
 private fun PlayerRingsRow(
     players: List<Player>,
@@ -382,18 +635,17 @@ private fun PlayerRingsRow(
             PlayerAvatarItem(
                 player = player,
                 isSelected = player.id == selectedPlayer.id,
-                // 这里不要过滤，把点击事件传出去，让上层决定能不能选
+
                 onClick = { onPlayerSelect(player) }
             )
         }
     }
 }
-// ====================================================
 
 @Composable
 private fun SubmittedOverlay(
     isHost: Boolean = false,
-    onRestart: () -> Unit = {} // 新增回调
+    onRestart: () -> Unit = {}
 ) { StudioGlass(
         modifier = Modifier
             .fillMaxWidth()
@@ -448,7 +700,6 @@ private fun PhaseHeader() {
             fontWeight = FontWeight.Bold
         )
 
-        // 稍微保留一点底部间距，让它和下方的玩家头像不至于贴得太紧
         Spacer(modifier = Modifier.height(16.dp))
     }
 }
@@ -462,11 +713,10 @@ private fun PlayerAvatarItem(
 
     val scale by animateFloatAsState(if (isSelected || player.isSelf) 1.1f else 0.95f, label = "")
 
-    // 天道庇佑的光效颜色：如果是庇佑状态，边框变淡紫色/金色流光
     val borderColor = when {
-        player.hasHeavenProtection -> Color(0xFF8B5CF6) // 天道庇佑：紫色
-        player.isSelf -> Color(0xFF659B7A)           // 本尊：绿色
-        isSelected -> Color(0xFFD4AF37)              // 选中：金色
+        player.hasHeavenProtection -> Color(0xFF8B5CF6)
+        player.isSelf -> Color(0xFF659B7A)
+        isSelected -> Color(0xFFD4AF37)
         else -> Color(0xFFCDBA96)
     }
 
@@ -487,10 +737,9 @@ private fun PlayerAvatarItem(
                 Text(player.name.take(1), color = Color(0xFF5C4033), fontSize = 22.sp, fontWeight = FontWeight.Bold)
             }
 
-            // --- 修改位置：灵脉数值标签 ---
             Box(
                 modifier = Modifier
-                    .offset(y = (8).dp) // 往下挪一点
+                    .offset(y = (8).dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(if (player.hasHeavenProtection) Color(0xFF8B5CF6) else Color(0xFF5C4033).copy(alpha = 0.7f))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
@@ -503,7 +752,6 @@ private fun PlayerAvatarItem(
                 )
             }
 
-            // 天道庇佑的小角标
             if (player.hasHeavenProtection) {
                 Text(
                     "✨",
@@ -513,6 +761,9 @@ private fun PlayerAvatarItem(
         }
         Spacer(modifier = Modifier.height(14.dp))
         Text(player.name, fontSize = 13.sp, color = Color(0xFF5C4033))
+        if (player.isBot) {
+            Text("机器人", fontSize = 10.sp, color = Color(0xFF8B7355), fontWeight = FontWeight.Bold)
+        }
     }
 }
 
@@ -522,10 +773,20 @@ private fun ActionPanel(
     selfPlayer: Player,
     isSubmitting: Boolean,
     isAlliedWithTarget: Boolean,
+    dayNumber: Int,
+    alliancePartner: Player?,
+    alliancePlan: AllianceActionPlan?,
+    canConspire: Boolean,
+    canAlliance: Boolean,
+    onConspiracyRequest: () -> Unit,
     onAllianceRequest: () -> Unit,
+    onAllianceActionPlanPropose: (Player, ActionType, Int, Int, Int) -> Unit,
+    onAllianceActionPlanConfirm: (AllianceActionPlan) -> Unit,
     onActionSubmit: (Player, ActionType, Int) -> Unit
 ) {
     var duelStake by remember { mutableFloatStateOf(10f) }
+    var rewardShare by remember { mutableFloatStateOf(50f) }
+    var penaltyShare by remember { mutableFloatStateOf(50f) }
 
     StudioGlass(
         modifier = Modifier
@@ -546,7 +807,6 @@ private fun ActionPanel(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ===== 灵脉押注池（玻璃子卡片）=====
             StudioGlass(
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -581,13 +841,25 @@ private fun ActionPanel(
             Spacer(modifier = Modifier.height(20.dp))
 
             OutlinedButton(
+                onClick = onConspiracyRequest,
+                enabled = !isSubmitting && canConspire,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.VisibilityOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(if (canConspire) "发起密谋邀请" else "密谋第 4 天开放")
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
                 onClick = onAllianceRequest,
-                enabled = !isSubmitting,
+                enabled = !isSubmitting && canAlliance && selfPlayer.alliancePartnerId == null,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("发起结盟请求")
+                Text(if (canAlliance) "发起结盟请求" else "同盟第 6 天开放")
             }
 
             if (isAlliedWithTarget) {
@@ -602,9 +874,31 @@ private fun ActionPanel(
                 )
             }
 
+            if (alliancePartner != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                AllianceActionPlanPanel(
+                    targetPlayer = targetPlayer,
+                    alliancePartner = alliancePartner,
+                    plan = alliancePlan,
+                    rewardShare = rewardShare.toInt(),
+                    penaltyShare = penaltyShare.toInt(),
+                    onRewardShareChange = { rewardShare = it.toFloat() },
+                    onPenaltyShareChange = { penaltyShare = it.toFloat() },
+                    onPropose = { actionType ->
+                        onAllianceActionPlanPropose(
+                            targetPlayer,
+                            actionType,
+                            duelStake.toInt(),
+                            rewardShare.toInt(),
+                            penaltyShare.toInt()
+                        )
+                    },
+                    onConfirm = onAllianceActionPlanConfirm
+                )
+            }
+
             Spacer(modifier = Modifier.height(20.dp))
 
-            // ===== 四大行动按钮 =====
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 GlowActionButton(
                     modifier = Modifier.weight(1f),
@@ -679,7 +973,79 @@ private fun ActionPanel(
     }
 }
 
-// 带有炫酷长按结印动画的按钮
+@Composable
+private fun AllianceActionPlanPanel(
+    targetPlayer: Player,
+    alliancePartner: Player,
+    plan: AllianceActionPlan?,
+    rewardShare: Int,
+    penaltyShare: Int,
+    onRewardShareChange: (Int) -> Unit,
+    onPenaltyShareChange: (Int) -> Unit,
+    onPropose: (ActionType) -> Unit,
+    onConfirm: (AllianceActionPlan) -> Unit
+) {
+    StudioGlass(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("同盟行动协定", color = Color(0xFF5C4033), fontWeight = FontWeight.Bold)
+            Text("总奖励/惩罚 x3，按预先协定分配", color = Color(0xFF8B7355), fontSize = 12.sp)
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text("奖励分配：你 $rewardShare% · ${alliancePartner.name} ${100 - rewardShare}%", color = Color(0xFF8B7355), fontSize = 12.sp)
+            Slider(
+                value = rewardShare.toFloat(),
+                onValueChange = { onRewardShareChange(it.toInt()) },
+                valueRange = 0f..100f,
+                colors = SliderDefaults.colors(thumbColor = Color(0xFFD4AF37), activeTrackColor = Color(0xFFD4AF37))
+            )
+            Text("惩罚分配：你 $penaltyShare% · ${alliancePartner.name} ${100 - penaltyShare}%", color = Color(0xFF8B7355), fontSize = 12.sp)
+            Slider(
+                value = penaltyShare.toFloat(),
+                onValueChange = { onPenaltyShareChange(it.toInt()) },
+                valueRange = 0f..100f,
+                colors = SliderDefaults.colors(thumbColor = Color(0xFFC0625E), activeTrackColor = Color(0xFFC0625E))
+            )
+
+            if (plan != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                val confirmedText = "${plan.confirmedPlayerIds.size}/2 已确认"
+                Text(
+                    "当前方案：${plan.actionType.displayName()} → ${plan.targetName.ifBlank { targetPlayer.name }}，$confirmedText",
+                    color = Color(0xFF5C4033),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Button(
+                    onClick = { onConfirm(plan) },
+                    enabled = !plan.isFullyConfirmed(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (plan.isFullyConfirmed()) "方案已锁定" else "确认当前同盟方案")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { onPropose(ActionType.DUEL) }, modifier = Modifier.weight(1f)) {
+                    Text("协定斗法")
+                }
+                OutlinedButton(onClick = { onPropose(ActionType.RAID) }, modifier = Modifier.weight(1f)) {
+                    Text("协定奇袭")
+                }
+            }
+        }
+    }
+}
+
+private fun ActionType.displayName(): String {
+    return when (this) {
+        ActionType.DUEL -> "斗法"
+        ActionType.RAID -> "奇袭"
+        ActionType.DEFEND_ARRAY -> "防御"
+        ActionType.EXPLORE -> "寻宝"
+    }
+}
+
 @Composable
 private fun ActionButton(
     modifier: Modifier,
@@ -745,7 +1111,6 @@ private fun GlowActionButton(
 ) {
     Box(modifier = modifier) {
 
-        // ✨ 呼吸光
         StudioGlow(Modifier.matchParentSize())
 
         ActionButton(
