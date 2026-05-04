@@ -38,6 +38,7 @@ import com.example.demo.model.Player
 import com.example.demo.ui.home.HomeScreen
 import com.example.demo.ui.phase1.Phase1Screen
 import com.example.demo.ui.phase2.Phase2Screen
+import com.example.demo.ui.silkbag.SilkBagScreen
 import com.example.demo.ui.theme.DemoTheme
 import com.example.demo.viewmodel.GameViewModel
 import com.example.demo.viewmodel.Screen
@@ -178,7 +179,8 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 onClearDebugSettings = {
                     viewModel.clearDebugNextDaySettings()
                 },
-                onForceProceed = { viewModel.restartPhase1() }
+                onForceProceed = { viewModel.restartPhase1() },
+                onSilkBagClick = { navController.navigate("silk_bag/第一阶段/my") }
             )
         }
 
@@ -204,7 +206,20 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 },
                 onGhostInterfere = { isBlessing -> viewModel.submitGhostInterference(isBlessing) },
                 onProceedToNextDay = { viewModel.proceedToNextDay() },
-                onRestartEvent = { viewModel.restartCurrentEvent() }
+                onRestartEvent = { viewModel.restartCurrentEvent() },
+                onSilkBagClick = { navController.navigate("silk_bag/第二阶段/my") }
+            )
+        }
+
+        composable(route = "silk_bag/{sourcePhaseName}/{mode}") { backStackEntry ->
+            val sourcePhaseName = backStackEntry.arguments?.getString("sourcePhaseName") ?: "当前阶段"
+            SilkBagScreen(
+                players = uiState.players,
+                dayNumber = uiState.dayNumber,
+                sourcePhaseName = sourcePhaseName,
+                showCodex = backStackEntry.arguments?.getString("mode") == "codex",
+                onCodexClick = { navController.navigate("silk_bag/$sourcePhaseName/codex") },
+                onBack = { navController.popBackStack() }
             )
         }
     }

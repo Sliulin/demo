@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
@@ -78,7 +79,8 @@ fun Phase2Screen(
     isGameOver: Boolean,
     canProceedToNextDay: Boolean,
     onProceedToNextDay: () -> Unit,
-    onRestartEvent: () -> Unit
+    onRestartEvent: () -> Unit,
+    onSilkBagClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -112,7 +114,8 @@ fun Phase2Screen(
             selfPlayer = selfPlayer,
             systemBroadcast = systemBroadcast,
             dayNumber = dayNumber,
-            eventCount = eventQueue.size
+            eventCount = eventQueue.size,
+            onSilkBagClick = onSilkBagClick
         )
 
         LazyColumn(
@@ -162,16 +165,22 @@ private fun Phase2Header(
     selfPlayer: Player,
     systemBroadcast: String,
     dayNumber: Int,
-    eventCount: Int
+    eventCount: Int,
+    onSilkBagClick: () -> Unit
 ) {
     Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            TextButton(onClick = onSilkBagClick) {
+                Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("查看锦囊", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
@@ -200,7 +209,7 @@ private fun Phase2Header(
         }
 
         Text(
-            text = "第二阶段：公开结算",
+            text = "第二纪元：公开裁决",
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF5C4033)

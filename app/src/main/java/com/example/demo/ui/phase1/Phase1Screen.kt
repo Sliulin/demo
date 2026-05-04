@@ -83,7 +83,8 @@ fun Phase1Screen(
     onDebugNextDayChange: (Int?) -> Unit = {},
     onDebugSpiritVeinsChange: (String, Int?) -> Unit = { _, _ -> },
     onClearDebugSettings: () -> Unit = {},
-    onForceProceed: () -> Unit = {}
+    onForceProceed: () -> Unit = {},
+    onSilkBagClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     BackHandler(enabled = true) {
@@ -183,7 +184,7 @@ fun Phase1Screen(
         ) {
             Spacer(modifier = Modifier.height(32.dp))
 
-            PhaseHeader()
+            PhaseHeader(onSilkBagClick = onSilkBagClick)
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -690,7 +691,7 @@ private fun SubmittedOverlay(
 }
 
 @Composable
-private fun PhaseHeader() {
+private fun PhaseHeader(onSilkBagClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
         Text(
             text = "第一纪元 · 谋定乾坤",
@@ -699,6 +700,17 @@ private fun PhaseHeader() {
             letterSpacing = 2.sp,
             fontWeight = FontWeight.Bold
         )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        OutlinedButton(
+            onClick = onSilkBagClick,
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White.copy(alpha = 0.55f))
+        ) {
+            Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("查看锦囊")
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
     }
@@ -888,7 +900,7 @@ private fun ActionPanel(
                         onAllianceActionPlanPropose(
                             targetPlayer,
                             actionType,
-                            duelStake.toInt(),
+                            0,
                             rewardShare.toInt(),
                             penaltyShare.toInt()
                         )
@@ -915,7 +927,7 @@ private fun ActionPanel(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Default.VisibilityOff,
                     label = "死士奇袭",
-                    sub = "暗中窃取10条",
+                    sub = "暗中窃取15条",
                     color = Color(0xFFC0625E),
                     enabled = !isSubmitting && !isAlliedWithTarget
                 ) {
@@ -930,11 +942,11 @@ private fun ActionPanel(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Default.Shield,
                     label = "护宗大阵",
-                    sub = "防守反噬20条",
+                    sub = "防守反噬15条",
                     color = Color(0xFF659B7A),
                     enabled = !isSubmitting
                 ) {
-                    onActionSubmit(targetPlayer, ActionType.DEFEND_ARRAY, 0)
+                    onActionSubmit(selfPlayer, ActionType.DEFEND_ARRAY, 0)
                 }
 
                 GlowActionButton(
@@ -1026,11 +1038,14 @@ private fun AllianceActionPlanPanel(
 
             Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = { onPropose(ActionType.DUEL) }, modifier = Modifier.weight(1f)) {
-                    Text("协定斗法")
-                }
                 OutlinedButton(onClick = { onPropose(ActionType.RAID) }, modifier = Modifier.weight(1f)) {
                     Text("协定奇袭")
+                }
+                OutlinedButton(onClick = { onPropose(ActionType.DEFEND_ARRAY) }, modifier = Modifier.weight(1f)) {
+                    Text("协定防御")
+                }
+                OutlinedButton(onClick = { onPropose(ActionType.EXPLORE) }, modifier = Modifier.weight(1f)) {
+                    Text("协定探索")
                 }
             }
         }

@@ -236,11 +236,11 @@ object GameRuleEngine {
                 ActionType.RAID -> {
                     when (decision) {
                         0 -> {
-                            applyAllianceReward(plan, 10)
-                            veinChanges[targetId] = (veinChanges[targetId] ?: 0) - 30
+                            applyAllianceReward(plan, 15)
+                            veinChanges[targetId] = (veinChanges[targetId] ?: 0) - 45
                         }
                         1 -> {}
-                        2 -> applyAlliancePenalty(plan, 10)
+                        2 -> applyAlliancePenalty(plan, 15)
                     }
                 }
                 ActionType.DEFEND_ARRAY -> {}
@@ -273,9 +273,9 @@ object GameRuleEngine {
             }
             ActionType.RAID -> {
                 when (decision) {
-                    0 -> applyTransfer(event.attacker.id, event.defender.id, 10)
+                    0 -> applyTransfer(event.attacker.id, event.defender.id, 15)
                     1 -> {}
-                    2 -> applyTransfer(event.defender.id, event.attacker.id, 10)
+                    2 -> applyTransfer(event.defender.id, event.attacker.id, 15)
                 }
             }
             ActionType.DEFEND_ARRAY -> {

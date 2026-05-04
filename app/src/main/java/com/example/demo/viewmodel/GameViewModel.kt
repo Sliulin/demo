@@ -253,9 +253,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val actionTargetId = if (actionType == ActionType.DEFEND_ARRAY) myPlayerId else targetPlayer.id
         val msg = MsgSubmitAction(
             attackerId = myPlayerId,
-            targetId = targetPlayer.id,
+            targetId = actionTargetId,
             actionType = actionType,
             stake = stake
         )
@@ -385,6 +386,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (targetPlayer.id == partnerId || targetPlayer.id == myPlayerId) {
             _uiState.update { it.copy(allianceNotice = "同盟行动需要选择第三方目标") }
+            return
+        }
+
+        if (actionType !in setOf(ActionType.RAID, ActionType.DEFEND_ARRAY, ActionType.EXPLORE)) {
+            _uiState.update { it.copy(allianceNotice = "同盟后只能选择奇袭、防御、探索") }
             return
         }
 
