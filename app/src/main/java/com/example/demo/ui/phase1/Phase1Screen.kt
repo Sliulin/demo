@@ -63,6 +63,7 @@ fun Phase1Screen(
     conspiracySessions: List<ConspiracySession> = emptyList(),
     allianceActionPlans: List<AllianceActionPlan> = emptyList(),
     allianceNotice: String = "",
+    silkBagNotice: String = "",
     conspiracyNotice: String = "",
     chatMessages: List<ChatMessage> = emptyList(),
     dayNumber: Int = 1,
@@ -127,6 +128,11 @@ fun Phase1Screen(
     LaunchedEffect(allianceNotice) {
         if (allianceNotice.isNotBlank()) {
             Toast.makeText(context, allianceNotice, Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(silkBagNotice) {
+        if (silkBagNotice.isNotBlank()) {
+            Toast.makeText(context, silkBagNotice, Toast.LENGTH_LONG).show()
         }
     }
     LaunchedEffect(conspiracyNotice) {

@@ -67,6 +67,7 @@ fun Phase2Screen(
     eventQueue: List<GameEvent>,
     currentEventIndex: Int,
     systemBroadcast: String,
+    silkBagNotice: String = "",
     isHost: Boolean,
     selfPlayer: Player,
     players: List<Player>,
@@ -95,6 +96,11 @@ fun Phase2Screen(
             listState.animateScrollToItem(currentEventIndex)
         }
     }
+    LaunchedEffect(silkBagNotice) {
+        if (silkBagNotice.isNotBlank()) {
+            Toast.makeText(context, silkBagNotice, Toast.LENGTH_LONG).show()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -113,6 +119,7 @@ fun Phase2Screen(
         Phase2Header(
             selfPlayer = selfPlayer,
             systemBroadcast = systemBroadcast,
+            silkBagNotice = silkBagNotice,
             dayNumber = dayNumber,
             eventCount = eventQueue.size,
             onSilkBagClick = onSilkBagClick
@@ -164,6 +171,7 @@ fun Phase2Screen(
 private fun Phase2Header(
     selfPlayer: Player,
     systemBroadcast: String,
+    silkBagNotice: String,
     dayNumber: Int,
     eventCount: Int,
     onSilkBagClick: () -> Unit
@@ -204,6 +212,12 @@ private fun Phase2Header(
         if (systemBroadcast.isNotBlank()) {
             GlassCard {
                 Text(systemBroadcast, color = Color(0xFFB42318), fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+        if (silkBagNotice.isNotBlank() && silkBagNotice != systemBroadcast) {
+            GlassCard {
+                Text(silkBagNotice, color = Color(0xFFA64B3F), fontWeight = FontWeight.SemiBold)
             }
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -309,6 +323,7 @@ private fun EventItemCard(
 
             EventSummary(event = event)
             AllianceSummary(event = event, players = players)
+            SilkBagSummary(event = event, players = players)
 
             if (isCurrent && !isEventFinished) {
                 Spacer(modifier = Modifier.height(20.dp))
@@ -334,6 +349,48 @@ private fun EventItemCard(
             if ((isPast || (isCurrent && isEventFinished)) && event.hostDecisionIndex != null) {
                 CompletedDecisionFooter(event = event)
             }
+        }
+    }
+}
+
+@Composable
+private fun SilkBagSummary(event: GameEvent, players: List<Player>) {
+    if (event.silkBagUseLogs.isEmpty() &&
+        event.veinChangesByPlayerId.isEmpty() &&
+        event.silkBagChangesByPlayerId.isEmpty()
+    ) {
+        return
+    }
+    Spacer(modifier = Modifier.height(8.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFFFF8E8).copy(alpha = 0.72f), RoundedCornerShape(12.dp))
+            .padding(10.dp)
+    ) {
+        Text("锦囊修正", color = Color(0xFFA64B3F), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        event.silkBagUseLogs.forEach { log ->
+            Text(
+                text = "【${log.cardName}】${if (log.requiresHostDecision) " · 待房主裁决录入" else " · 已声明"}",
+                color = Color(0xFF7A4F2C),
+                fontSize = 12.sp
+            )
+        }
+        if (event.veinChangesByPlayerId.isNotEmpty() || event.silkBagChangesByPlayerId.isNotEmpty()) {
+            val names = players.associateBy { it.id }
+            val veinText = event.veinChangesByPlayerId.entries.joinToString("；") { (id, change) ->
+                val sign = if (change > 0) "+" else ""
+                "${names[id]?.name ?: "未知"} 灵脉 $sign$change"
+            }
+            val bagText = event.silkBagChangesByPlayerId.entries.joinToString("；") { (id, change) ->
+                val sign = if (change > 0) "+" else ""
+                "${names[id]?.name ?: "未知"} 锦囊 $sign$change"
+            }
+            Text(
+                text = listOf(veinText, bagText).filter { it.isNotBlank() }.joinToString("；"),
+                color = Color(0xFF5C4033),
+                fontSize = 12.sp
+            )
         }
     }
 }

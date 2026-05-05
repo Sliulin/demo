@@ -25,7 +25,10 @@ data class Player(
     var status: PlayerStatus = PlayerStatus.IDLE,
     var silkBag: Int = 0,
     var hasHeavenProtection: Boolean = false,
-    val alliancePartnerId: String? = null
+    val alliancePartnerId: String? = null,
+    val silkBagCards: List<SilkBagInstance> = emptyList(),
+    val usedOnceSilkBagIds: List<SilkBagId> = emptyList(),
+    val activeSilkBagEffects: List<ActiveSilkBagEffect> = emptyList()
 )
 
 /**

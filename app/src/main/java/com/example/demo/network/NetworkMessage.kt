@@ -8,6 +8,8 @@ import com.example.demo.model.ConspiracySession
 import com.example.demo.model.GameEvent
 import com.example.demo.model.GamePhase
 import com.example.demo.model.Player
+import com.example.demo.model.SilkBagUseLog
+import com.example.demo.model.SilkBagUseRequest
 import kotlinx.serialization.Serializable
 
 /**
@@ -225,4 +227,36 @@ object MsgRestartPhase1 : NetworkMessage()
 @Serializable
 data class MsgRestartCurrentEvent(
     val eventIndex: Int
+) : NetworkMessage()
+
+/**
+ * 玩家请求房主使用一张具体锦囊。
+ */
+@Serializable
+data class MsgUseSilkBag(
+    val request: SilkBagUseRequest
+) : NetworkMessage()
+
+/**
+ * 房主广播锦囊公开结算结果。
+ */
+@Serializable
+data class MsgSilkBagResult(
+    val players: List<Player>,
+    val systemBroadcast: String,
+    val eventQueue: List<GameEvent> = emptyList(),
+    val currentEvent: GameEvent? = null,
+    val currentEventIndex: Int = 0,
+    val log: SilkBagUseLog? = null,
+    val recipientPlayerId: String? = null,
+    val success: Boolean = true
+) : NetworkMessage()
+
+/**
+ * 房主发送给锦囊使用者的私密结果。
+ */
+@Serializable
+data class MsgPrivateSilkBagResult(
+    val recipientPlayerId: String,
+    val notice: String
 ) : NetworkMessage()

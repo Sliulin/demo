@@ -135,6 +135,7 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 conspiracySessions = uiState.conspiracySessions,
                 allianceActionPlans = uiState.allianceActionPlans,
                 allianceNotice = uiState.allianceNotice,
+                silkBagNotice = uiState.silkBagNotice,
                 conspiracyNotice = uiState.conspiracyNotice,
                 chatMessages = uiState.chatMessages,
                 dayNumber = uiState.dayNumber,
@@ -192,6 +193,7 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 eventQueue = uiState.eventQueue,
                 currentEventIndex = uiState.currentEventIndex,
                 systemBroadcast = uiState.systemBroadcast,
+                silkBagNotice = uiState.silkBagNotice,
                 isHost = uiState.isHost,
                 selfPlayer = self,
                 players = uiState.players,
@@ -219,6 +221,10 @@ fun AppNavigation(viewModel: GameViewModel = viewModel()) {
                 sourcePhaseName = sourcePhaseName,
                 showCodex = backStackEntry.arguments?.getString("mode") == "codex",
                 onCodexClick = { navController.navigate("silk_bag/$sourcePhaseName/codex") },
+                onUseSilkBag = { instanceId, targetPlayerId ->
+                    viewModel.useSilkBag(instanceId, targetPlayerId)
+                    navController.popBackStack()
+                },
                 onBack = { navController.popBackStack() }
             )
         }

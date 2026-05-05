@@ -29,7 +29,10 @@ data class GameEvent(
     val allianceActionPlan: AllianceActionPlan? = null,
     val betrayerId: String? = null,
     val betrayalWinnerId: String? = null,
-    val betrayalSucceeded: Boolean? = null
+    val betrayalSucceeded: Boolean? = null,
+    val silkBagUseLogs: List<SilkBagUseLog> = emptyList(),
+    val veinChangesByPlayerId: Map<String, Int> = emptyMap(),
+    val silkBagChangesByPlayerId: Map<String, Int> = emptyMap()
 )
 
 /**

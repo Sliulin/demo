@@ -53,6 +53,7 @@ data class GameUiState(
     val conspiracySessions: List<ConspiracySession> = emptyList(),
     val conspiracyNotice: String = "",
     val allianceActionPlans: List<AllianceActionPlan> = emptyList(),
+    val silkBagNotice: String = "",
     val debugNextDayNumber: Int? = null,
     val debugNextDaySpiritVeins: Map<String, Int> = emptyMap()
 )
@@ -559,6 +560,26 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * 请求使用一张具体锦囊。
+     */
+    fun useSilkBag(instanceId: String, targetPlayerId: String? = null) {
+        val eventId = _uiState.value.currentEvent?.id
+        val msg = MsgUseSilkBag(
+            SilkBagUseRequest(
+                playerId = myPlayerId,
+                instanceId = instanceId,
+                targetPlayerId = targetPlayerId,
+                eventId = eventId
+            )
+        )
+        if (_uiState.value.isHost) {
+            handleNetworkMessage(msg)
+        } else {
+            sendToServer(msg)
+        }
+    }
+
+    /**
      * 淘汰玩家对当前事件提交幽魂干预。
      */
     fun submitGhostInterference(isBlessing: Boolean) {
@@ -681,7 +702,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleNetworkMessage(message: NetworkMessage) {
         when (message) {
             is MsgRoomStateSync -> {
-                val localPlayers = message.players.map { it.copy(isSelf = (it.id == myPlayerId)) }
+                val localPlayers = GameRuleEngine.run { message.players.syncSilkBagCounts() }
+                    .map { it.copy(isSelf = (it.id == myPlayerId)) }
                 _uiState.update { it.copy(
                     players = localPlayers,
                     systemBroadcast = message.systemBroadcast,
@@ -708,9 +730,43 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            is MsgPrivateSilkBagResult -> {
+                if (message.recipientPlayerId == myPlayerId) {
+                    _uiState.update { it.copy(silkBagNotice = message.notice) }
+                }
+            }
+
+            is MsgSilkBagResult -> {
+                if (message.recipientPlayerId == null || message.recipientPlayerId == myPlayerId) {
+                    val localPlayers = GameRuleEngine.run { message.players.syncSilkBagCounts() }
+                        .map { it.copy(isSelf = (it.id == myPlayerId)) }
+                    _uiState.update { state ->
+                        val newQueue = if (message.eventQueue.isNotEmpty()) {
+                            message.eventQueue
+                        } else {
+                            state.eventQueue
+                        }.toMutableList()
+                        message.currentEvent?.let { event ->
+                            if (message.currentEventIndex in newQueue.indices) {
+                                newQueue[message.currentEventIndex] = event
+                            }
+                        }
+                        state.copy(
+                            players = localPlayers,
+                            eventQueue = newQueue,
+                            currentEvent = message.currentEvent ?: state.currentEvent,
+                            systemBroadcast = message.systemBroadcast,
+                            silkBagNotice = message.systemBroadcast
+                        )
+                    }
+                }
+            }
+
             is MsgGameStart -> {
                 _uiState.update { state ->
-                    val cleanPlayers = AllianceRuleEngine.clearAlliances(state.players)
+                    val cleanPlayers = GameRuleEngine.run {
+                        resetDailySilkBagEffects(AllianceRuleEngine.clearAlliances(state.players)).syncSilkBagCounts()
+                    }
                     state.copy(
                         currentPhase = message.initialPhase,
                         currentScreen = Screen.PHASE1,
@@ -727,6 +783,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         conspiracySessions = emptyList(),
                         conspiracyNotice = "",
                         allianceActionPlans = emptyList(),
+                        silkBagNotice = "",
                         chatMessages = state.chatMessages.filterNot { it.isAllianceChat || it.isConspiracyChat },
                         systemBroadcast = message.systemBroadcast
                     )
@@ -735,6 +792,60 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
             is MsgSubmitAction -> {
                 if (_uiState.value.isHost) {
+                    val jailedTarget = _uiState.value.players.firstOrNull { player ->
+                        player.activeSilkBagEffects.any {
+                            it.cardId == SilkBagId.HUA_DI_WEI_LAO &&
+                                it.targetPlayerId == message.attackerId &&
+                                !it.isConsumed
+                        }
+                    }
+                    if (jailedTarget != null) {
+                        broadcastToAll(MsgActionRejected(message.attackerId, "你本回合被画地为牢，不能提交行动"))
+                        if (message.attackerId == myPlayerId) {
+                            _uiState.update {
+                                it.copy(
+                                    hasSubmittedAction = false,
+                                    silkBagNotice = "你本回合被画地为牢，不能提交行动"
+                                )
+                            }
+                        }
+                        return
+                    }
+                    val actor = _uiState.value.players.find { it.id == message.attackerId }
+                    if (actor?.activeSilkBagEffects?.any {
+                            it.cardId == SilkBagId.XIU_YANG_SHENG_XI &&
+                                message.actionType != ActionType.EXPLORE &&
+                                !it.isConsumed
+                        } == true
+                    ) {
+                        broadcastToAll(MsgActionRejected(message.attackerId, "休养生息期间只能选择探索"))
+                        if (message.attackerId == myPlayerId) {
+                            _uiState.update {
+                                it.copy(
+                                    hasSubmittedAction = false,
+                                    silkBagNotice = "休养生息期间只能选择探索"
+                                )
+                            }
+                        }
+                        return
+                    }
+                    if (actor?.activeSilkBagEffects?.any {
+                            it.cardId == SilkBagId.MOU_DING_ER_DONG &&
+                                it.dayNumber == _uiState.value.dayNumber &&
+                                !it.isConsumed
+                        } == true
+                    ) {
+                        broadcastToAll(MsgActionRejected(message.attackerId, "谋定而动生效，本回合不可提交行动"))
+                        if (message.attackerId == myPlayerId) {
+                            _uiState.update {
+                                it.copy(
+                                    hasSubmittedAction = false,
+                                    silkBagNotice = "谋定而动生效，本回合不可提交行动"
+                                )
+                            }
+                        }
+                        return
+                    }
                     if (AllianceRuleEngine.areAllied(_uiState.value.players, message.attackerId, message.targetId) &&
                         (message.actionType == ActionType.DUEL || message.actionType == ActionType.RAID)
                     ) {
@@ -834,6 +945,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     sendChatToRecipients(message)
                 } else {
                     appendChatMessageIfVisible(message)
+                }
+            }
+
+            is MsgUseSilkBag -> {
+                if (_uiState.value.isHost) {
+                    handleSilkBagUse(message.request)
                 }
             }
 
@@ -1289,11 +1406,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                             if (newCount >= requiredConfirmCount) {
 
                                 val fullyConfirmedEvent = currentEvent.copy(confirmCount = newCount)
-                                val updatedPlayers = GameRuleEngine.resolveEventOutcome(fullyConfirmedEvent, state.players)
+                                val playersAfterOutcome = GameRuleEngine.resolveEventOutcome(fullyConfirmedEvent, state.players)
+                                val recordedEvent = GameRuleEngine.updateEventOutcomeRecord(
+                                    fullyConfirmedEvent,
+                                    state.players,
+                                    playersAfterOutcome
+                                )
+                                val updatedPlayers = playersAfterOutcome
 
                                 val newQueue = state.eventQueue.toMutableList()
                                 if (state.currentEventIndex in newQueue.indices) {
-                                    newQueue[state.currentEventIndex] = fullyConfirmedEvent
+                                    newQueue[state.currentEventIndex] = recordedEvent
                                 }
 
                                 val alivePlayers = updatedPlayers.filter { it.status != PlayerStatus.ELIMINATED }
@@ -1310,9 +1433,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                     val finalMsg = "【终局】诸天寂灭，唯有 $winner 存续道统！"
                                     msgsToBroadcast = listOf(
                                         MsgRoomStateSync(updatedPlayers, finalMsg, newQueue),
-                                        MsgEventSync(state.currentEventIndex, fullyConfirmedEvent, finalMsg)
+                                        MsgEventSync(state.currentEventIndex, recordedEvent, finalMsg)
                                     )
-                                    state.copy(players = updatedPlayers, systemBroadcast = finalMsg, currentEvent = fullyConfirmedEvent, eventQueue = newQueue, isGameOver = true, canProceedToNextDay = false)
+                                    state.copy(players = updatedPlayers, systemBroadcast = finalMsg, currentEvent = recordedEvent, eventQueue = newQueue, isGameOver = true, canProceedToNextDay = false)
                                 } else {
                                     val nextIndex = state.currentEventIndex + 1
                                     if (nextIndex < newQueue.size) {
@@ -1327,9 +1450,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                         triggerEndOfEra = true
                                         msgsToBroadcast = listOf(
                                             MsgRoomStateSync(updatedPlayers, resultMsg, newQueue),
-                                            MsgEventSync(state.currentEventIndex, fullyConfirmedEvent, resultMsg)
+                                            MsgEventSync(state.currentEventIndex, recordedEvent, resultMsg)
                                         )
-                                        state.copy(players = updatedPlayers, systemBroadcast = resultMsg, currentEvent = fullyConfirmedEvent, eventQueue = newQueue, canProceedToNextDay = true)
+                                        state.copy(players = updatedPlayers, systemBroadcast = resultMsg, currentEvent = recordedEvent, eventQueue = newQueue, canProceedToNextDay = true)
                                     }
                                 }
                             } else {
@@ -1473,6 +1596,60 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun handleSilkBagUse(request: SilkBagUseRequest) {
+        val state = _uiState.value
+        val outcome = GameRuleEngine.useSilkBag(
+            players = state.players,
+            request = request,
+            dayNumber = state.dayNumber,
+            currentPhase = state.currentPhase,
+            currentEvent = state.currentEvent,
+            submittedActions = state.submittedActions
+        )
+
+        if (!outcome.success) {
+            val rejection = MsgPrivateSilkBagResult(request.playerId, outcome.publicMessage)
+            if (request.playerId == myPlayerId) {
+                handleNetworkMessage(rejection)
+            }
+            viewModelScope.launch(Dispatchers.IO) {
+                gameServer?.sendToPlayers(setOf(request.playerId), rejection)
+            }
+            return
+        }
+
+        val updatedEvent = outcome.event
+        val updatedQueue = state.eventQueue.map { event ->
+            if (updatedEvent != null && event.id == updatedEvent.id) updatedEvent else event
+        }
+        val syncedPlayers = GameRuleEngine.run { outcome.players.syncSilkBagCounts() }
+        _uiState.update {
+            it.copy(
+                players = syncedPlayers,
+                currentEvent = updatedEvent ?: it.currentEvent,
+                eventQueue = updatedQueue,
+                systemBroadcast = outcome.publicMessage,
+                silkBagNotice = outcome.privateMessage.ifBlank { outcome.publicMessage }
+            )
+        }
+
+        val result = MsgSilkBagResult(
+            players = syncedPlayers,
+            systemBroadcast = outcome.publicMessage,
+            eventQueue = updatedQueue,
+            currentEvent = updatedEvent,
+            currentEventIndex = state.currentEventIndex,
+            log = outcome.log
+        )
+        val privateResult = outcome.privateMessage.takeIf { it.isNotBlank() }?.let {
+            MsgPrivateSilkBagResult(request.playerId, it)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            gameServer?.broadcast(result)
+            privateResult?.let { gameServer?.sendToPlayers(setOf(request.playerId), it) }
+        }
+    }
+
     /**
      * 基于房主状态开启下一天的一阶段。
      */
@@ -1483,11 +1660,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val welcomeMsg = "—— 第 $nextDay 天 · 气机复苏 ——"
 
         val updatedPlayers = GameRuleEngine.assignHeavenProtection(
-            AllianceRuleEngine.clearAlliances(currentState.players).map { player ->
+            GameRuleEngine.resetDailySilkBagEffects(AllianceRuleEngine.clearAlliances(currentState.players)).map { player ->
                 val debugVeins = currentState.debugNextDaySpiritVeins[player.id]
                 if (debugVeins == null) player else player.copy(spiritVeins = debugVeins)
             }
-        )
+        ).let { GameRuleEngine.run { it.syncSilkBagCounts() } }
 
         _uiState.update { state ->
             state.copy(
